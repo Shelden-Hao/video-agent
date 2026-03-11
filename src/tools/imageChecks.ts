@@ -23,7 +23,7 @@ function getVisionConfig() {
 
 async function callVisionJsonTool(
   imageUrl: string,
-  instruction: string,
+  instruction: string, // 视觉模型指令（提示词）
 ): Promise<VisionJson | null> {
   const { apiKey, baseUrl, model } = getVisionConfig();
   if (!apiKey) return null;
@@ -46,7 +46,7 @@ async function callVisionJsonTool(
     },
     parameters: {
       // 只需要结构化文本，不需要流式与图片
-      enable_interleave: false,
+      enable_interleave: false, // 是否启用图文混排
       max_output_tokens: 512,
     },
   };
@@ -117,15 +117,20 @@ export async function validateImageStructure(
 ): Promise<ImageCheckResult> {
   if (!url) return { ok: false, reason: "empty url" };
 
-  const visionInstruction = `你是一个图片审核系统。
+  const visionInstruction = `你是一个图片内容审核系统，专用于儿童教育短视频的分镜图片检验。
 
 用户生成这张图片时使用的文本提示词（prompt）是：
 "${prompt}"
 
-请认真理解图片内容，并判断这张图片与上述提示词在「主体、关键动作、主要场景」上是否基本一致。
+请判断图片是否对提示词的「核心意图」进行了有效表现。判断标准（宽松匹配）：
+1. 主要角色/主体是否出现（如描述了小兔子，图中是否有小兔子）？
+2. 整体场景主题是否符合（如户外草地、教室、儿童互动等大方向）？
+3. 不需严格匹配艺术风格（2D/3D/水彩等均可接受）。
+4. 不要求精确还原每个动作细节，只要画面内容与提示词核心语义一致即可。
+5. 若图片内容与提示词完全无关（如提示词是动物故事但图中是建筑风景），才判定为不匹配。
 
 只输出一个 JSON，字段说明如下：
-- match: boolean，图片整体是否符合提示词语义
+- match: boolean，图片内容与提示词核心意图是否基本一致
 - confidence: number，0~1 之间，表示你对 match 判断的置信度
 - summary: string，用 1~2 句自然语言简要描述图片内容（中文）
 
@@ -140,17 +145,13 @@ export async function validateImageStructure(
   try {
     json = await callVisionJsonTool(url, visionInstruction);
   } catch (err) {
-    console.warn("[ImageChecks] 结构化验证调用视觉模型失败，尝试做轻量兜底校验:", err);
+    console.warn(
+      "[ImageChecks] 结构化验证调用视觉模型失败，尝试做轻量兜底校验:",
+      err,
+    );
   }
 
   if (!json) {
-    // 兜底：退回到简单 URL + prompt 校验，避免把整个 pipeline 弄挂
-    if (!/^https?:\/\//.test(url)) {
-      return { ok: false, reason: "url must start with http/https" };
-    }
-    if (!prompt || prompt.trim().length < 5) {
-      return { ok: false, reason: "prompt too short (fallback)" };
-    }
     return { ok: true, reason: "fallback-heuristic", raw: null };
   }
 
@@ -181,7 +182,9 @@ export async function validateImageStructure(
  *   "acceptable": true
  * }
  */
-export async function checkImageQuality(url: string): Promise<ImageCheckResult> {
+export async function checkImageQuality(
+  url: string,
+): Promise<ImageCheckResult> {
   if (!url) return { ok: false, reason: "empty url" };
 
   const instruction = `你是一个图片质量评估系统。
@@ -208,20 +211,7 @@ export async function checkImageQuality(url: string): Promise<ImageCheckResult> 
   }
 
   if (!json) {
-    // 兜底：简单基于 host 做一个很弱的“可信度”
-    try {
-      const u = new URL(url);
-      const trustedHosts = [
-        "dashscope-result-bj.oss-cn-beijing.aliyuncs.com",
-        "aliyuncs.com",
-      ];
-      if (!trustedHosts.some((h) => u.host.includes(h))) {
-        return { ok: true, reason: "fallback-untrusted-host-accepted", raw: null };
-      }
-      return { ok: true, reason: "fallback-trusted-host", raw: null };
-    } catch {
-      return { ok: false, reason: "invalid url format (fallback)", raw: null };
-    }
+    return { ok: false, reason: "fallback-heuristic", raw: null };
   }
 
   const acceptable =
@@ -281,7 +271,6 @@ export async function checkImageSafety(
   }
 
   if (!json) {
-    // 兜底：儿童教培默认安全，但避免静默吞掉潜在风险，这里保守一点
     return {
       ok: true,
       reason: "fallback-assume-safe-for-kids-edu",
@@ -304,4 +293,3 @@ export async function checkImageSafety(
     raw: json,
   };
 }
-

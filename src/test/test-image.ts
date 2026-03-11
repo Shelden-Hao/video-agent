@@ -9,28 +9,27 @@ const DEFAULT_PLAN: VideoPlan = {
   title: "小兔子学分享",
   targetAge: "3-6岁",
   totalDurationSeconds: 8,
-  summary: "通过小兔子和朋友的互动，教孩子学会分享。",
+  summary: "通过小兔子的故事，让儿童了解分享的快乐和重要性。",
   steps: [
     {
       step: 1,
       durationSeconds: 3,
-      teachingPoint: "小兔子有一个苹果，它想和朋友一起分享。",
+      teachingPoint: "介绍小兔子有零食但不分享。",
       sceneDescription:
-        "一只可爱的小兔子拿着一个红色的苹果，坐在草地上，脸上带着微笑。",
+        "一只可爱的小兔子坐在草地上，手里拿着一根胡萝卜，表情有点得意。",
     },
     {
       step: 2,
       durationSeconds: 3,
-      teachingPoint: "小兔子把苹果分给朋友，大家开心地一起吃。",
+      teachingPoint: "小兔子遇到其他小动物，学会分享。",
       sceneDescription:
-        "小兔子把苹果递给一只小熊，小熊接过苹果，两人一起坐在树下开心地吃苹果。",
+        "小兔子遇到一只小松鼠，把胡萝卜分给它，两个小动物一起开心地吃东西。",
     },
     {
       step: 3,
       durationSeconds: 2,
-      teachingPoint: "分享让朋友更开心，也让自己更快乐。",
-      sceneDescription:
-        "小兔子和小熊手拉手，脸上洋溢着幸福的笑容，背景是阳光明媚的森林。",
+      teachingPoint: "总结分享带来的快乐。",
+      sceneDescription: "小兔子和小松鼠在阳光下玩耍，画面温馨，背景音乐轻快。",
     },
   ],
 };
@@ -39,9 +38,9 @@ async function main() {
   const topic = "小兔子学分享";
   const plan = DEFAULT_PLAN;
   const script =
-    "步骤1：小兔子有一个红红的苹果，它想和小熊一起分享，真棒呀！\n" +
-    "步骤2：小兔子把苹果分给小熊，两个好朋友一起坐在树下，开心地吃苹果！\n" +
-    "步骤3：你看，分享会让朋友更开心，也会让我们更快乐！";
+    "步骤1：小兔子手里的胡萝卜真好吃，它一个人偷偷吃，不跟朋友分享哦。\n" +
+    "步骤2：小兔子遇到小松鼠，把胡萝卜分一半给它，两个好朋友一起吃，真开心！\n" +
+    "步骤3：分享让朋友更开心，小兔子和小松鼠一起玩，阳光下笑眯眯的。";
 
   console.log("🖼️  测试 Image Agent - 主题:", topic);
   console.log("📑 计划:", plan.title, `(${plan.steps.length} 步)`);
@@ -83,4 +82,3 @@ main().catch((err) => {
   console.error("test-image 运行错误:", err);
   process.exit(1);
 });
-

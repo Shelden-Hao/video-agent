@@ -1,5 +1,8 @@
 /**
  * 测试 Script Agent：根据 plan 生成教培向、儿童适宜的旁白脚本
+ *
+ * 用法：
+ *   pnpm run test:script
  */
 import "dotenv/config";
 import type { AgentState, VideoPlan } from "../types/state.js";
@@ -9,28 +12,27 @@ const DEFAULT_PLAN: VideoPlan = {
   title: "小兔子学分享",
   targetAge: "3-6岁",
   totalDurationSeconds: 8,
-  summary: "通过小兔子和朋友的互动，教孩子学会分享。",
+  summary: "通过小兔子的故事，让儿童了解分享的快乐和重要性。",
   steps: [
     {
       step: 1,
       durationSeconds: 3,
-      teachingPoint: "小兔子有一个苹果，它想和朋友一起分享。",
+      teachingPoint: "介绍小兔子有零食但不分享。",
       sceneDescription:
-        "一只可爱的小兔子拿着一个红色的苹果，坐在草地上，脸上带着微笑。",
+        "画面: 一只可爱的小兔子坐在草地上，手里拿着一根胡萝卜，表情有点得意。",
     },
     {
       step: 2,
       durationSeconds: 3,
-      teachingPoint: "小兔子把苹果分给朋友，大家开心地一起吃。",
+      teachingPoint: "小兔子遇到其他小动物，学会分享。",
       sceneDescription:
-        "小兔子把苹果递给一只小熊，小熊接过苹果，两人一起坐在树下开心地吃苹果。",
+        "小兔子遇到一只小松鼠，把胡萝卜分给它，两个小动物一起开心地吃东西。",
     },
     {
       step: 3,
       durationSeconds: 2,
-      teachingPoint: "分享让朋友更开心，也让自己更快乐。",
-      sceneDescription:
-        "小兔子和小熊手拉手，脸上洋溢着幸福的笑容，背景是阳光明媚的森林。",
+      teachingPoint: "总结分享带来的快乐。",
+      sceneDescription: "小兔子和小松鼠在阳光下玩耍，画面温馨，背景音乐轻快。",
     },
   ],
 };

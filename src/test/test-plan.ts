@@ -11,7 +11,7 @@ import { runPlanAgent } from "../agents/planAgent.js";
 import type { AgentState } from "../types/state.js";
 
 async function main() {
-  const topic = process.argv[2] ?? "熊猫";
+  const topic = process.argv[2] ?? "";
   console.log("📋 测试 Planner - 主题:", topic);
   console.log("---");
 
