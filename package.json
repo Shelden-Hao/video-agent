@@ -10,7 +10,9 @@
     "start": "node dist/index.js",
     "test:plan": "tsx src/test/test-plan.ts",
     "test:script": "tsx src/test/test-script.ts",
-    "test:image": "tsx src/test/test-image.ts"
+    "test:image": "tsx src/test/test-image.ts",
+    "test:voice": "tsx src/test/test-voice.ts",
+    "test:video": "tsx src/test/test-video.ts"
   },
   "keywords": [
     "langgraph",
@@ -25,11 +27,14 @@
     "@langchain/community": "^1.1.22",
     "@langchain/core": "^1.1.31",
     "@langchain/langgraph": "^1.2.1",
+    "@langchain/openai": "^1.2.13",
     "dotenv": "^17.3.1",
+    "ws": "^8.19.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@types/ws": "^8.18.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3"
   }
