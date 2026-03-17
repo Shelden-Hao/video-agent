@@ -48,6 +48,7 @@ async function main() {
 
   const initialState: AgentState = {
     topic,
+    userParams: null,
     plan,
     script,
     images: [],

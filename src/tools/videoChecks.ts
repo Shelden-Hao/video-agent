@@ -1,4 +1,5 @@
 import "dotenv/config";
+import type { UserParams } from "../types/state.js";
 import {
   buildVideoConsistencyInstruction,
   buildVideoSafetyInstruction,
@@ -116,10 +117,11 @@ async function callVisionWithVideo(
 export async function checkVideoConsistency(
   videoUrl: string,
   prompt: string,
+  userParams?: UserParams,
 ): Promise<VideoCheckResult> {
   if (!videoUrl) return { ok: false, reason: "empty url" };
 
-  const instruction = buildVideoConsistencyInstruction(prompt);
+  const instruction = buildVideoConsistencyInstruction(prompt, userParams);
   let json: VisionJson | null = null;
   try {
     json = await callVisionWithVideo(videoUrl, instruction);

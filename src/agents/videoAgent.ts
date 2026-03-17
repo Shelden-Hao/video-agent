@@ -5,21 +5,22 @@
  *
  *  Step 1 · 输入结构化
  *    generateVideoParamsTask(AgentState) → VideoGenerationParams[]
- *    LLM 将自然语言 topic/plan/script 转换为精确的视频 API 参数（prompt、size、负面词等）
+ *    LLM 将 userParams/plan 转换为精确的视频 API 参数（prompt、size、负面词等）
+ *    若 userParams.useImageAsFirstFrame=true，自动将 state.images 注入为 firstFrameUrl
  *
  *  Step 2 · 视频生成（异步 Wan API + 轮询）
  *    generateVideoTask({ params }) → string（videoUrl）
- *    调用 wan2.5-t2v-preview（支持自动配音 + 10s），创建异步任务，每 15s 轮询状态，最长等待 15 分钟
+ *    - 若有 firstFrameUrl → 使用 i2v（图生视频）模式
+ *    - 否则 → 使用 t2v（纯文生视频）模式
  *
  *  Step 3 · 生成后校验（并行三项）
  *    evaluateVideoTask({ videoUrl, params }) → EvaluationResult
- *    - 语义一致性：视频内容是否符合 prompt
+ *    - 语义一致性：视频内容是否符合 prompt（含风格/情绪/受众检验）
  *    - 安全审核：NSFW / 暴力 / 政治 / 仇恨
  *    - 质量检测：清晰度 / 流畅度 / 构图
  *
  *  Step 4 · 自动修改（不满足时重新生成）
- *    videoEvaluatorOptimizer: 最多 MAX_RETRY 次，每次将上次失败原因反馈给 prompt，
- *    直到三项均通过或耗尽重试次数
+ *    videoEvaluatorOptimizer: 最多 MAX_RETRY 次，每次将上次失败原因反馈给 prompt
  *
  * 架构参考：
  *   https://docs.langchain.com/oss/javascript/langgraph/workflows-agents#evaluator-optimizer
@@ -40,69 +41,90 @@ import {
   checkVideoSafety,
   checkVideoQuality,
 } from "../tools/videoChecks.js";
+import { extractImageVisualStyle } from "../tools/imageChecks.js";
 
 // ---------------------------------------------------------------------------
 // 常量与工具函数
 // ---------------------------------------------------------------------------
 
-/** 每步视频最多重试次数（生成 + 校验循环） */
 const MAX_RETRY_PER_VIDEO = Number(process.env.VIDEO_MAX_RETRY ?? "3");
-
-/** 视频生成 API 轮询间隔（毫秒） */
 const POLL_INTERVAL_MS = 15_000;
-
-/** 视频生成最大等待时间（毫秒），15 分钟 */
 const POLL_MAX_WAIT_MS = 15 * 60 * 1000;
-
-/** 限流重试初始等待时间（ms），每次翻倍 */
 const RATE_LIMIT_BASE_DELAY_MS = 3_000;
-
-/** 限流最大重试次数 */
 const RATE_LIMIT_MAX_RETRY = 4;
-
-/**
- * 最大处理步骤数：视频生成耗时且消耗配额，默认只处理前 N 步。
- * 可通过 VIDEO_MAX_STEPS 环境变量覆盖。
- */
 const MAX_VIDEO_STEPS = Number(process.env.VIDEO_MAX_STEPS ?? "1");
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-// LLM（用于结构化参数生成）
-const llm = new ChatAlibabaTongyi({
-  alibabaApiKey: process.env.ALIBABA_API_KEY,
-  temperature: 0.5,
-});
+// 懒初始化：首次调用时创建，避免模块加载时 dotenv 尚未读取 .env 文件
+let _llm: ChatAlibabaTongyi | null = null;
+function getLLM(): ChatAlibabaTongyi {
+  if (!_llm) {
+    _llm = new ChatAlibabaTongyi({
+      alibabaApiKey: process.env.ALIBABA_API_KEY,
+      temperature: 0.5,
+    });
+  }
+  return _llm;
+}
 
 // ---------------------------------------------------------------------------
 // Wan 视频生成 API（异步 + 轮询）
 // ---------------------------------------------------------------------------
 
 type WanVideoParams = {
-  model: string;
+  /** 文生视频（t2v）模型名，如 "wanx2.1-t2v-turbo" */
+  t2vModel: string;
+  /** 图生视频（i2v）模型名（可选），如 "wanx2.1-i2v-turbo" */
+  i2vModel?: string;
   prompt: string;
   negativePrompt: string;
   size: string;
   duration: number;
   promptExtend: boolean;
+  /** 首帧图片 URL（提供则自动切换 i2v 模式） */
+  firstFrameUrl?: string;
   audioUrl?: string;
   baseUrl: string;
 };
 
 /**
- * Step 1 of Wan API：提交视频生成任务，返回 task_id。
+ * 提交视频生成任务，返回 task_id。
+ *
+ * i2v 模式（图生视频）：仅当同时满足以下条件时才启用：
+ *   1. firstFrameUrl 不为空
+ *   2. i2vModel 已配置（需在 .env 中设置 BAILIAN_I2V_MODEL）
+ * 否则回退为 t2v（纯文生视频）模式，不传 img_url。
  */
 async function submitVideoTask(params: WanVideoParams): Promise<string> {
   const apiKey = process.env.ALIBABA_API_KEY;
   if (!apiKey) throw new Error("Missing ALIBABA_API_KEY");
 
+  // 只有同时有 firstFrameUrl 且有 i2v 模型时才真正使用 i2v 模式
+  const useI2V = Boolean(params.firstFrameUrl) && Boolean(params.i2vModel);
+  const model = useI2V ? params.i2vModel! : params.t2vModel;
+
+  if (useI2V) {
+    console.log(
+      `[VideoAgent] ✅ i2v 模式，首帧: ${params.firstFrameUrl?.slice(0, 80)}...`,
+    );
+  } else if (params.firstFrameUrl && !params.i2vModel) {
+    console.log(
+      `[VideoAgent] ⚠️  有首帧图但未配置 BAILIAN_I2V_MODEL，使用 t2v 模式（风格已通过 prompt 约束）`,
+    );
+  }
+
   const url = `${params.baseUrl}/api/v1/services/aigc/video-generation/video-synthesis`;
   const body: Record<string, unknown> = {
-    model: params.model,
+    model,
     input: {
       prompt: params.prompt,
       ...(params.negativePrompt
         ? { negative_prompt: params.negativePrompt }
+        : {}),
+      // 仅 i2v 模式才传 img_url；t2v 模型不识别 img_url 会生成随机风格
+      ...(useI2V && params.firstFrameUrl
+        ? { img_url: params.firstFrameUrl }
         : {}),
       ...(params.audioUrl ? { audio_url: params.audioUrl } : {}),
     },
@@ -119,14 +141,13 @@ async function submitVideoTask(params: WanVideoParams): Promise<string> {
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
-      // 异步模式：必须设置此请求头
       "X-DashScope-Async": "enable",
     },
     body: JSON.stringify(body),
   });
 
   const text = await res.text();
-  let json: any;
+  let json: unknown;
   try {
     json = JSON.parse(text);
   } catch {
@@ -136,8 +157,8 @@ async function submitVideoTask(params: WanVideoParams): Promise<string> {
   }
 
   if (!res.ok) {
-    const code = json?.code ?? "HTTPError";
-    const message = json?.message ?? text.slice(0, 300);
+    const code = (json as any)?.code ?? "HTTPError";
+    const message = (json as any)?.message ?? text.slice(0, 300);
     const err = new Error(
       `Video API submit error: ${code} - ${message}`,
     ) as Error & { isRateLimit?: boolean };
@@ -146,7 +167,7 @@ async function submitVideoTask(params: WanVideoParams): Promise<string> {
     throw err;
   }
 
-  const taskId = json?.output?.task_id;
+  const taskId = (json as any)?.output?.task_id;
   if (!taskId || typeof taskId !== "string") {
     throw new Error(
       `Video API missing task_id in response: ${text.slice(0, 300)}`,
@@ -158,8 +179,7 @@ async function submitVideoTask(params: WanVideoParams): Promise<string> {
 }
 
 /**
- * Step 2 of Wan API：轮询 task_id 直到任务完成，返回视频 URL。
- * 间隔 POLL_INTERVAL_MS，超时 POLL_MAX_WAIT_MS 后抛出错误。
+ * 轮询 task_id 直到任务完成，返回视频 URL。
  */
 async function pollVideoTask(taskId: string, baseUrl: string): Promise<string> {
   const apiKey = process.env.ALIBABA_API_KEY;
@@ -177,7 +197,7 @@ async function pollVideoTask(taskId: string, baseUrl: string): Promise<string> {
     });
 
     const text = await res.text();
-    let json: any;
+    let json: unknown;
     try {
       json = JSON.parse(text);
     } catch {
@@ -185,12 +205,12 @@ async function pollVideoTask(taskId: string, baseUrl: string): Promise<string> {
       continue;
     }
 
-    const status = json?.output?.task_status;
+    const status = (json as any)?.output?.task_status;
     const elapsed = Math.round((Date.now() - startTime) / 1000);
     console.log(`[VideoAgent] 轮询中... 状态: ${status}，已等待 ${elapsed}s`);
 
     if (status === "SUCCEEDED") {
-      const videoUrl = json?.output?.video_url;
+      const videoUrl = (json as any)?.output?.video_url;
       if (!videoUrl || typeof videoUrl !== "string") {
         throw new Error(
           `Video task SUCCEEDED but missing video_url: ${text.slice(0, 300)}`,
@@ -201,8 +221,8 @@ async function pollVideoTask(taskId: string, baseUrl: string): Promise<string> {
     }
 
     if (status === "FAILED") {
-      const code = json?.output?.code ?? "FAILED";
-      const message = json?.output?.message ?? "Unknown error";
+      const code = (json as any)?.output?.code ?? "FAILED";
+      const message = (json as any)?.output?.message ?? "Unknown error";
       throw new Error(`Video task FAILED: ${code} - ${message}`);
     }
 
@@ -215,7 +235,6 @@ async function pollVideoTask(taskId: string, baseUrl: string): Promise<string> {
         `Video task UNKNOWN (task_id may have expired): ${taskId}`,
       );
     }
-
     // PENDING / RUNNING：继续轮询
   }
 
@@ -229,30 +248,72 @@ async function pollVideoTask(taskId: string, baseUrl: string): Promise<string> {
 // ---------------------------------------------------------------------------
 
 /**
- * [Task] Step 1：输入结构化
+ * [Task] Step 1：从已生成图片中提取视觉风格描述，用于约束视频风格。
  *
- * LLM 将 topic/plan/script 转换为每步的结构化视频生成参数 VideoGenerationParams[]。
- * 若解析失败则回退到基于 plan.steps 的简单参数拼接。
+ * 分析第一张图片的渲染风格（2D卡通/3D/写实）、主角外观、色调，
+ * 生成英文描述字符串，注入到视频生成提示词中，确保风格一致。
+ */
+const extractImageStyleTask = task(
+  "extractImageStyle",
+  async (params: { imageUrl: string }): Promise<string> => {
+    console.log("[VideoAgent] 正在提取图片视觉风格（用于约束视频风格）...");
+    const styleDesc = await extractImageVisualStyle(params.imageUrl);
+    if (styleDesc) {
+      console.log(`[VideoAgent] 图片风格提取完成: ${styleDesc.slice(0, 100)}...`);
+    } else {
+      console.warn("[VideoAgent] 图片风格提取失败，将依赖 userParams.style");
+    }
+    return styleDesc;
+  },
+);
+
+/**
+ * [Task] Step 2：输入结构化
+ *
+ * 先提取图片视觉风格，再让 LLM 将 userParams/plan 转换为每步结构化视频生成参数。
+ * 视觉风格描述作为最高优先级约束注入到 LLM 提示词中，确保视频风格与图片一致。
+ * 最后注入每步对应的 firstFrameUrl（若 i2v 模型已配置）。
  */
 const generateVideoParamsTask = task(
   "generateVideoParams",
   async (state: AgentState): Promise<VideoGenerationParams[]> => {
     console.log("[VideoAgent] Step 1: 开始结构化视频生成参数...");
 
+    // 提取图片视觉风格（若有已生成图片）
+    let imageStyleDescription = "";
+    if (state.images.length > 0) {
+      imageStyleDescription = await extractImageStyleTask({
+        imageUrl: state.images[0],
+      });
+    }
+
     const messages = [
       new SystemMessage(VIDEO_STRUCTURE_SYSTEM_PROMPT),
-      new HumanMessage(buildVideoStructureUserMessage(state)),
+      new HumanMessage(
+        buildVideoStructureUserMessage(state, imageStyleDescription || undefined),
+      ),
     ];
-    console.log(
-      "🚀 ~ videoAgent.ts:245 ~ buildVideoStructureUserMessage(state):",
-      buildVideoStructureUserMessage(state),
-    );
 
-    const res = await llm.invoke(messages);
-    console.log("🚀 ~ videoAgent.ts:248 ~ res:", res);
+    const res = await getLLM().invoke(messages);
     const raw = res.content?.toString?.() ?? "";
-    const params = extractVideoParams(raw, state);
-    console.log("🚀 ~ videoAgent.ts:251 ~ params:", params);
+    let params = extractVideoParams(raw, state);
+
+    // 若 i2v 模型已配置 + 用户要求图片作为视频首帧，注入 firstFrameUrl
+    const useFirstFrame = state.userParams?.useImageAsFirstFrame ?? false;
+    const hasI2VModel = Boolean(process.env.BAILIAN_I2V_MODEL);
+    if (useFirstFrame && hasI2VModel && state.images.length > 0) {
+      console.log(
+        `[VideoAgent] i2v 模式：为 ${Math.min(params.length, state.images.length)} 步注入首帧图片`,
+      );
+      params = params.map((p, i) => ({
+        ...p,
+        firstFrameUrl: state.images[i] ?? undefined,
+      }));
+    } else if (useFirstFrame && !hasI2VModel) {
+      console.log(
+        `[VideoAgent] 未配置 BAILIAN_I2V_MODEL，跳过首帧注入，风格已通过 prompt 约束`,
+      );
+    }
 
     console.log(`[VideoAgent] Step 1 完成：生成 ${params.length} 组视频参数`);
     return params;
@@ -261,22 +322,20 @@ const generateVideoParamsTask = task(
 
 /**
  * [Task] Step 2：视频生成（含限流指数退避重试）
- *
- * 调用 Wan 文生视频 API（异步），轮询直到任务完成，返回视频 URL。
- * 内置限流重试（Throttling.RateQuota），与外层评估重试独立。
  */
 const generateVideoTask = task(
   "generateVideo",
   async (params: {
     videoParams: VideoGenerationParams;
-    feedback?: string; // 上次评估失败的反馈，用于调整 prompt
-    model: string;
+    feedback?: string;
+    t2vModel: string;
+    i2vModel?: string;
     baseUrl: string;
     audioUrl?: string;
   }): Promise<string> => {
-    const { videoParams, feedback, model, baseUrl, audioUrl } = params;
+    const { videoParams, feedback, t2vModel, i2vModel, baseUrl, audioUrl } =
+      params;
 
-    // 若有上次失败反馈，在 prompt 前追加修改指示
     let refinedPrompt = videoParams.prompt;
     if (feedback) {
       const feedbackNote = `[请修正以下问题：${feedback}]；`;
@@ -285,12 +344,14 @@ const generateVideoTask = task(
     }
 
     const wanParams: WanVideoParams = {
-      model,
+      t2vModel,
+      i2vModel,
       prompt: refinedPrompt,
       negativePrompt: videoParams.negativePrompt,
       size: videoParams.size,
       duration: videoParams.duration,
       promptExtend: videoParams.promptExtend,
+      firstFrameUrl: videoParams.firstFrameUrl,
       baseUrl,
       audioUrl,
     };
@@ -301,8 +362,8 @@ const generateVideoTask = task(
         const taskId = await submitVideoTask(wanParams);
         const videoUrl = await pollVideoTask(taskId, baseUrl);
         return videoUrl;
-      } catch (err: any) {
-        if (err?.isRateLimit && attempt < RATE_LIMIT_MAX_RETRY) {
+      } catch (err: unknown) {
+        if ((err as any)?.isRateLimit && attempt < RATE_LIMIT_MAX_RETRY) {
           console.warn(
             `[VideoAgent] 触发限流，${delay / 1000}s 后重试（第 ${attempt} 次）`,
           );
@@ -319,19 +380,20 @@ const generateVideoTask = task(
 
 /**
  * [Task] Step 3：生成后校验（并行三项）
- *
- * 同时执行语义一致性、安全审核、质量检测，汇总结果。
- * 任一项不通过则整体不通过，并附带失败原因供 Step 4 参考。
  */
 const evaluateVideoTask = task(
   "evaluateVideo",
-  async (params: { videoUrl: string; videoParams: VideoGenerationParams }) => {
-    const { videoUrl, videoParams } = params;
+  async (params: {
+    videoUrl: string;
+    videoParams: VideoGenerationParams;
+    userParams?: AgentState["userParams"];
+  }) => {
+    const { videoUrl, videoParams, userParams } = params;
 
     console.log("[VideoAgent] Step 3: 开始校验（语义/安全/质量）...");
 
     const [consistencyRes, safetyRes, qualityRes] = await Promise.all([
-      checkVideoConsistency(videoUrl, videoParams.prompt),
+      checkVideoConsistency(videoUrl, videoParams.prompt, userParams ?? undefined),
       checkVideoSafety(videoUrl, videoParams.prompt),
       checkVideoQuality(videoUrl),
     ]);
@@ -373,9 +435,11 @@ const evaluateVideoTask = task(
 type VideoWorkflowInput = {
   videoParams: VideoGenerationParams;
   maxRetry: number;
-  model: string;
+  t2vModel: string;
+  i2vModel?: string;
   baseUrl: string;
   audioUrl?: string;
+  userParams?: AgentState["userParams"];
 };
 
 /**
@@ -383,17 +447,17 @@ type VideoWorkflowInput = {
  *
  * 遵循 LangGraph evaluator-optimizer 模式：
  *   generateVideo → evaluateVideo → [accepted? ✓end : ✗generateVideo]
- *
- * 校验不通过时将失败原因作为 feedback 传入下次生成，让模型自动修正。
  */
 const videoEvaluatorOptimizer = entrypoint(
   "videoEvaluatorOptimizer",
   async ({
     videoParams,
     maxRetry,
-    model,
+    t2vModel,
+    i2vModel,
     baseUrl,
     audioUrl,
+    userParams,
   }: VideoWorkflowInput): Promise<string> => {
     let lastFeedback = "";
 
@@ -405,16 +469,21 @@ const videoEvaluatorOptimizer = entrypoint(
       const videoUrl = await generateVideoTask({
         videoParams,
         feedback: lastFeedback || undefined,
-        model,
+        t2vModel,
+        i2vModel,
         baseUrl,
         audioUrl,
       });
 
-      const evaluation = await evaluateVideoTask({ videoUrl, videoParams });
+      const evaluation = await evaluateVideoTask({
+        videoUrl,
+        videoParams,
+        userParams,
+      });
 
       if (evaluation.accepted) {
         console.log(
-          `[VideoAgent] 步骤 ${videoParams.step} 视频通过校验，URL: ${videoUrl}`,
+          `[VideoAgent] 步骤 ${videoParams.step} 视频通过校验 ✓ URL: ${videoUrl}`,
         );
         return videoUrl;
       }
@@ -440,10 +509,8 @@ const videoEvaluatorOptimizer = entrypoint(
 /**
  * 顶层视频 Agent entrypoint。
  *
- * 所有 task 都在此 entrypoint 上下文内执行，保证 LangGraph 运行时上下文可用。
- *
  * 完整流程：
- *   generateVideoParamsTask (LLM 结构化)
+ *   generateVideoParamsTask (LLM 结构化 + 注入 firstFrameUrl)
  *         ↓ VideoGenerationParams[]
  *   forEach step (串行，避免触发限流):
  *     videoEvaluatorOptimizer.invoke() → videoUrl
@@ -461,14 +528,23 @@ const videoAgentWorkflow = entrypoint(
     const apiKey = process.env.ALIBABA_API_KEY;
     if (!apiKey) throw new Error("Missing ALIBABA_API_KEY");
 
-    const model = process.env.BAILIAN_VIDEO_MODEL ?? "wanx2.1-t2v-turbo";
+    const t2vModel = process.env.BAILIAN_VIDEO_MODEL ?? "wanx2.1-t2v-turbo";
+    // i2v 模型：专用图生视频，未设置则回退到 t2v（不使用首帧）
+    const i2vModel = process.env.BAILIAN_I2V_MODEL ?? undefined;
     const baseUrl =
       process.env.DASHSCOPE_BASE_URL ?? "https://dashscope.aliyuncs.com";
 
-    // Step 1：输入结构化
+    const useFirstFrame = state.userParams?.useImageAsFirstFrame ?? false;
+    if (useFirstFrame && !i2vModel) {
+      console.warn(
+        "[VideoAgent] useImageAsFirstFrame=true 但未设置 BAILIAN_I2V_MODEL，首帧将被忽略（t2v 模式不支持）",
+      );
+    }
+
+    // Step 1：输入结构化（含 firstFrameUrl 注入）
     const allParams = await generateVideoParamsTask(state);
 
-    // 限制最大处理步骤数（节约免费配额）
+    // 限制最大处理步骤数
     const paramsToProcess = allParams.slice(0, MAX_VIDEO_STEPS);
 
     console.log(
@@ -487,9 +563,11 @@ const videoAgentWorkflow = entrypoint(
       const videoUrl = await videoEvaluatorOptimizer.invoke({
         videoParams: vp,
         maxRetry: MAX_RETRY_PER_VIDEO,
-        model,
+        t2vModel,
+        i2vModel,
         baseUrl,
         audioUrl: state.audio || undefined,
+        userParams: state.userParams ?? undefined,
       });
 
       videos.push(videoUrl);
@@ -498,6 +576,9 @@ const videoAgentWorkflow = entrypoint(
     const finalVideo = videos[0] ?? state.video ?? "";
 
     console.log(`[VideoAgent] 全部完成，共生成 ${videos.length} 段视频`);
+    if (videos.length > 0) {
+      videos.forEach((v, i) => console.log(`  步骤 ${i + 1}: ${v}`));
+    }
 
     return {
       ...state,

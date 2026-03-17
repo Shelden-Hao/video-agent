@@ -7,40 +7,46 @@ import {
   IMAGE_SYSTEM_PROMPT,
   buildImageUserMessage,
   extractImagePrompts,
+  buildFallbackImagePrompts,
+  CHARACTER_ANCHOR_SYSTEM_PROMPT,
+  buildCharacterAnchorUserMessage,
+  parseCharacterAnchor,
+  injectAnchorIntoPrompt,
+  type CharacterAnchor,
 } from "../prompts/imagePrompt.js";
 import {
   validateImageStructure,
   checkImageQuality,
   checkImageSafety,
+  checkCrossImageConsistency,
 } from "../tools/imageChecks.js";
 
-const llm = new ChatAlibabaTongyi({
-  alibabaApiKey: process.env.ALIBABA_API_KEY,
-});
+// 懒初始化：首次调用时创建，避免模块加载时 dotenv 尚未读取 .env 文件
+let _llm: ChatAlibabaTongyi | null = null;
+function getLLM(): ChatAlibabaTongyi {
+  if (!_llm) {
+    _llm = new ChatAlibabaTongyi({
+      alibabaApiKey: process.env.ALIBABA_API_KEY,
+    });
+  }
+  return _llm;
+}
 
-type GenerateImagesOptions = {
-  /** 图片风格/尺寸等元信息（预留） */
-  styleHint?: string;
-  /** 输出尺寸，例如 "1024*1024" 或 "1K"（不同模型支持略有差异） */
-  size?: string;
-  /** 模型名：例如 "z-image-turbo"、"qwen-image"、"wan2.6-image"（以开通为准） */
-  model?: string;
-  /** 地域 base url，默认北京 */
-  baseUrl?: string;
-  /** 是否开启提示词智能改写（会影响费用/耗时，默认 false） */
-  promptExtend?: boolean;
+type GenerateImageOpts = {
+  model: string;
+  size: string;
+  baseUrl: string;
+  promptExtend: boolean;
 };
 
 const MAX_RETRY_PER_IMAGE = Number(process.env.IMAGE_MAX_RETRY ?? "3");
-/** 限流重试：最多重试次数 */
 const RATE_LIMIT_MAX_RETRY = 5;
-/** 限流重试初始等待时间（ms），每次翻倍 */
 const RATE_LIMIT_BASE_DELAY_MS = 2000;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-function parseImageUrlFromResponse(json: any): string | null {
-  const content = json?.output?.choices?.[0]?.message?.content;
+function parseImageUrlFromResponse(json: unknown): string | null {
+  const content = (json as any)?.output?.choices?.[0]?.message?.content;
   if (!Array.isArray(content)) return null;
   for (const item of content) {
     if (item?.image && typeof item.image === "string") return item.image;
@@ -50,38 +56,22 @@ function parseImageUrlFromResponse(json: any): string | null {
 
 async function generateOneImageBySyncApi(
   prompt: string,
-  opts: Required<
-    Pick<GenerateImagesOptions, "model" | "size" | "baseUrl" | "promptExtend">
-  >,
+  opts: GenerateImageOpts,
 ): Promise<string> {
   const apiKey = process.env.ALIBABA_API_KEY;
-  if (!apiKey) {
-    throw new Error("Missing API key: set ALIBABA_API_KEY");
-  }
+  if (!apiKey) throw new Error("Missing API key: set ALIBABA_API_KEY");
 
-  // 同步文生图：multimodal-generation/generation
-  // 参考：Z-Image 文档返回 output.choices[0].message.content[].image
-  // https://www.alibabacloud.com/help/zh/model-studio/z-image-api-reference
   const url = `${opts.baseUrl}/api/v1/services/aigc/multimodal-generation/generation`;
   const body = {
     model: opts.model,
     input: {
-      messages: [
-        {
-          role: "user",
-          content: [{ text: prompt }],
-        },
-      ],
+      messages: [{ role: "user", content: [{ text: prompt }] }],
     },
     parameters: {
-      // z-image 支持 size 形如 "1024*1024"；wan2.6-image 文档也支持像素值
       size: opts.size,
       prompt_extend: opts.promptExtend,
-      // 若调用的是 wan2.6-image，这里不启用图文混排（避免流式）
       enable_interleave: false,
-      // 生成1张图片
       n: 1,
-      // 水印
       watermark: false,
     },
   };
@@ -96,7 +86,7 @@ async function generateOneImageBySyncApi(
   });
 
   const text = await res.text();
-  let json: any;
+  let json: unknown;
   try {
     json = JSON.parse(text);
   } catch {
@@ -106,8 +96,8 @@ async function generateOneImageBySyncApi(
   }
 
   if (!res.ok) {
-    const code = json?.code ?? "HTTPError";
-    const message = json?.message ?? text.slice(0, 200);
+    const code = (json as any)?.code ?? "HTTPError";
+    const message = (json as any)?.message ?? text.slice(0, 200);
     const err = new Error(`Image API error: ${code} - ${message}`) as Error & {
       isRateLimit?: boolean;
     };
@@ -122,58 +112,88 @@ async function generateOneImageBySyncApi(
   return imageUrl;
 }
 
+// ---------------------------------------------------------------------------
+// Task 1：生成角色锚点（Character Anchor）
+// ---------------------------------------------------------------------------
+
 /**
- * [Task] 调用对话 LLM，根据 plan + script 生成每步的图片提示词数组。
- * 输出为有序字符串数组，与 plan.steps 下标一一对应。
- * 若解析失败则回退到基于 sceneDescription 的简单拼接。
+ * [Task] 生成「角色与视觉锚点」。
+ * 在所有图片生成之前运行一次，产出主角外观 + 画风关键词，
+ * 后续每张图片的提示词都将注入此锚点，确保主角外观一致。
+ */
+const generateCharacterAnchorTask = task(
+  "generateCharacterAnchor",
+  async (state: AgentState): Promise<CharacterAnchor | null> => {
+    console.log("[ImageAgent] 生成角色锚点...");
+    const messages = [
+      new SystemMessage(CHARACTER_ANCHOR_SYSTEM_PROMPT),
+      new HumanMessage(buildCharacterAnchorUserMessage(state)),
+    ];
+    const res = await getLLM().invoke(messages);
+    const raw = res.content?.toString?.() ?? "";
+    const anchor = parseCharacterAnchor(raw);
+    if (anchor) {
+      console.log(`[ImageAgent] 角色锚点: ${anchor.characterDescription.slice(0, 80)}...`);
+    } else {
+      console.warn("[ImageAgent] 角色锚点生成失败，将使用无锚点模式");
+    }
+    return anchor;
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Task 2：生成每步图片提示词
+// ---------------------------------------------------------------------------
+
+/**
+ * [Task] 调用 LLM 生成每步的图片提示词，并注入角色锚点。
  */
 const generateImagePromptsTask = task(
   "generateImagePrompts",
-  async (state: AgentState): Promise<string[]> => {
+  async (params: {
+    state: AgentState;
+    anchor: CharacterAnchor | null;
+  }): Promise<string[]> => {
+    const { state, anchor } = params;
     const messages = [
       new SystemMessage(IMAGE_SYSTEM_PROMPT),
       new HumanMessage(buildImageUserMessage(state)),
     ];
 
-    const res = await llm.invoke(messages);
+    const res = await getLLM().invoke(messages);
     const raw = res.content?.toString?.() ?? "";
     const parsed = extractImagePrompts(raw);
 
+    let basePrompts: string[];
     if (parsed.length > 0) {
-      return [...parsed].sort((a, b) => a.step - b.step).map((p) => p.prompt);
+      basePrompts = [...parsed]
+        .sort((a, b) => a.step - b.step)
+        .map((p) => p.prompt);
+    } else {
+      basePrompts = buildFallbackImagePrompts(state).map((p) => p.prompt);
     }
 
-    // 兜底：按 plan.steps 顺序逐步拼接
-    const style = "3D卡通, 软萌可爱, 明亮配色, 柔和光照, 干净背景, 儿童友好";
-    return (state.plan?.steps ?? []).map((s) => {
-      const stepHint = `步骤${s.step}: ${s.teachingPoint}`.trim();
-      const scene = s.sceneDescription?.trim() ?? "";
-      return `${style}; 主题:${state.topic}; ${stepHint}; 场景:${scene}; 情绪:开心温暖; 镜头:中景, 正面`;
-    });
+    // 将角色锚点注入每条提示词
+    if (anchor) {
+      return basePrompts.map((p) => injectAnchorIntoPrompt(p, anchor));
+    }
+    return basePrompts;
   },
 );
 
-/**
- * [Task] 调用图片生成 API，产出单张图片 URL。
- * 内置限流（Throttling.RateQuota）指数退避重试，与质量评估的重试相互独立。
- * 对应 evaluator-optimizer 中的 "generator" 角色。
- *
- * https://docs.langchain.com/oss/javascript/langgraph/functional-api#task
- */
+// ---------------------------------------------------------------------------
+// Task 3：生成单张图片
+// ---------------------------------------------------------------------------
+
 const generateImageTask = task(
   "generateImage",
-  async (params: {
-    prompt: string;
-    opts: Required<
-      Pick<GenerateImagesOptions, "model" | "size" | "baseUrl" | "promptExtend">
-    >;
-  }): Promise<string> => {
+  async (params: { prompt: string; opts: GenerateImageOpts }): Promise<string> => {
     let delay = RATE_LIMIT_BASE_DELAY_MS;
     for (let attempt = 1; attempt <= RATE_LIMIT_MAX_RETRY; attempt++) {
       try {
         return await generateOneImageBySyncApi(params.prompt, params.opts);
-      } catch (err: any) {
-        if (err?.isRateLimit && attempt < RATE_LIMIT_MAX_RETRY) {
+      } catch (err: unknown) {
+        if ((err as any)?.isRateLimit && attempt < RATE_LIMIT_MAX_RETRY) {
           console.warn(
             `[RateLimit] 限流，${delay / 1000}s 后重试（第 ${attempt} 次）`,
           );
@@ -188,65 +208,112 @@ const generateImageTask = task(
   },
 );
 
+// ---------------------------------------------------------------------------
+// Task 4：多维评估（结构 + 质量 + 安全 + 跨图一致性）
+// ---------------------------------------------------------------------------
+
 /**
- * [Task] 并行运行结构化验证 / 质量检测 / 安全审核三项评估。
- * 对应 evaluator-optimizer 中的 "evaluator" 角色。
+ * [Task] 并行运行四项评估：
+ * 1. 结构化验证（与 prompt 语义是否匹配）
+ * 2. 质量检测（清晰度/构图）
+ * 3. 安全审核（NSFW/暴力/政治/仇恨）
+ * 4. 跨图主角一致性（仅当提供 referenceImageUrl 时执行）
  */
 const evaluateImageTask = task(
   "evaluateImage",
-  async (params: { url: string; prompt: string }) => {
-    const [sRes, qRes, safeRes] = await Promise.all([
+  async (params: {
+    url: string;
+    prompt: string;
+    /** 参考图片 URL（第一张图片），用于跨图一致性检验 */
+    referenceImageUrl?: string;
+  }) => {
+    const checks: Promise<{ ok: boolean; reason?: string }>[] = [
       validateImageStructure(params.url, params.prompt),
       checkImageQuality(params.url),
       checkImageSafety(params.url, params.prompt),
-    ]);
+    ];
+
+    // 仅在有参考图时执行跨图一致性检验（第一张图无需与自己对比）
+    if (params.referenceImageUrl) {
+      checks.push(
+        checkCrossImageConsistency(params.url, params.referenceImageUrl),
+      );
+    }
+
+    const results = await Promise.all(checks);
+    const [sRes, qRes, safeRes, consistRes] = results;
 
     const feedback = (
       [
         !sRes.ok && `结构不符: ${sRes.reason}`,
         !qRes.ok && `质量不达标: ${qRes.reason}`,
         !safeRes.ok && `安全违规: ${safeRes.reason}`,
-      ] as (string | false)[]
+        consistRes && !consistRes.ok && `主角不一致: ${consistRes.reason}`,
+      ] as (string | false | undefined)[]
     )
       .filter(Boolean)
       .join("; ");
 
     return {
-      accepted: sRes.ok && qRes.ok && safeRes.ok,
+      accepted:
+        sRes.ok &&
+        qRes.ok &&
+        safeRes.ok &&
+        (consistRes ? consistRes.ok : true),
       feedback,
-      details: { structure: sRes, quality: qRes, safety: safeRes },
+      details: {
+        structure: sRes,
+        quality: qRes,
+        safety: safeRes,
+        consistency: consistRes ?? null,
+      },
     };
   },
 );
 
+// ---------------------------------------------------------------------------
+// Evaluator-Optimizer 闭环（单张图片）
+// ---------------------------------------------------------------------------
+
 type ImageWorkflowInput = {
   prompt: string;
-  opts: Required<
-    Pick<GenerateImagesOptions, "model" | "size" | "baseUrl" | "promptExtend">
-  >;
-  maxRetry: number; // 最大重试次数
+  opts: GenerateImageOpts;
+  maxRetry: number;
+  /** 参考图片 URL（第一张），用于跨图一致性对比；第一张图为 undefined */
+  referenceImageUrl?: string;
 };
 
 /**
- * 单张图片的「生成 → 评估 → 反馈 → 重试」闭环。
+ * 单张图片的「生成 → 评估 → 反馈 → 重试」闭环（Evaluator-Optimizer 模式）。
  *
- * 遵循 LangGraph evaluator-optimizer 模式：
- *   generateImage → evaluateImage → [accepted? ✓end : ✗generateImage]
- *
- * entrypoint 函数可用于从函数创建工作流。它封装了工作流逻辑并管理执行流程，包括处理长时间运行的任务和中断。
- *
- * https://docs.langchain.com/oss/javascript/langgraph/workflows-agents#evaluator-optimizer
+ * 评估包含四项：结构验证、质量检测、安全审核、跨图主角一致性。
+ * 不通过时将失败原因注入到下一次生成的 prompt 中自动修正。
  */
 const imageEvaluatorOptimizer = entrypoint(
   "imageEvaluatorOptimizer",
-  async ({ prompt, opts, maxRetry }: ImageWorkflowInput): Promise<string> => {
-    let lastFeedback = ""; // 上次评估反馈
+  async ({
+    prompt,
+    opts,
+    maxRetry,
+    referenceImageUrl,
+  }: ImageWorkflowInput): Promise<string> => {
+    let lastFeedback = "";
 
     for (let attempt = 1; attempt <= maxRetry; attempt++) {
-      const url = await generateImageTask({ prompt, opts });
-      const evaluation = await evaluateImageTask({ url, prompt });
+      // 将上次失败原因注入提示词帮助自动修正
+      const refinedPrompt = lastFeedback
+        ? `[修正要求：${lastFeedback}] ${prompt}`.slice(0, 1200)
+        : prompt;
+
+      const url = await generateImageTask({ prompt: refinedPrompt, opts });
+      const evaluation = await evaluateImageTask({
+        url,
+        prompt,
+        referenceImageUrl,
+      });
 
       if (evaluation.accepted) {
+        console.log(`[ImageEval] attempt ${attempt} 通过 ✓ URL: ${url}`);
         return url;
       }
 
@@ -263,15 +330,19 @@ const imageEvaluatorOptimizer = entrypoint(
   },
 );
 
+// ---------------------------------------------------------------------------
+// 顶层 Image Agent 工作流
+// ---------------------------------------------------------------------------
+
 /**
- * 顶层 Image Agent 工作流。
+ * Image Agent 工作流。
  *
- * 所有 task 都在此 entrypoint 的上下文内执行，保证 LangGraph 运行时上下文可用。
- *
- * 流程：
- *   generateImagePromptsTask (LLM)
- *         ↓ prompts[]
- *   Promise.all → imageEvaluatorOptimizer.invoke() × N（每张图独立闭环）
+ * 完整流程：
+ *   1. generateCharacterAnchorTask     — LLM 生成主角外观 + 画风锚点
+ *   2. generateImagePromptsTask        — LLM 生成每步图片提示词（注入锚点）
+ *   3. 串行 imageEvaluatorOptimizer    — 每步独立闭环：
+ *        generateImage → evaluate[结构+质量+安全+跨图一致性] → retry
+ *      ★ 第一张图生成后作为 referenceImageUrl 传入后续所有步骤
  */
 const imageAgentWorkflow = entrypoint(
   "imageAgent",
@@ -281,29 +352,54 @@ const imageAgentWorkflow = entrypoint(
     const apiKey = process.env.ALIBABA_API_KEY;
     if (!apiKey) throw new Error("Missing API key: set ALIBABA_API_KEY");
 
-    const model = process.env.BAILIAN_IMAGE_MODEL;
-    if (!model) throw new Error("Missing image model: set BAILIAN_IMAGE_MODEL");
+    const imageModel = process.env.BAILIAN_IMAGE_MODEL;
+    if (!imageModel)
+      throw new Error("Missing image model: set BAILIAN_IMAGE_MODEL");
 
-    const imageOpts = {
-      model,
-      size: "1024*1024",
-      // 北京地域（中国内地版）。国际版可用 dashscope-intl
+    const imageSize = state.userParams?.imageSize ?? "1024*1024";
+
+    const imageOpts: GenerateImageOpts = {
+      model: imageModel,
+      size: imageSize,
       baseUrl: process.env.DASHSCOPE_BASE_URL!,
       promptExtend: false,
     };
 
-    const prompts = await generateImagePromptsTask(state);
+    // Step 1：生成角色锚点
+    const anchor = await generateCharacterAnchorTask(state);
 
-    // 顺序生成，避免并发触发限流；每张图之间稍作等待
+    // Step 2：生成每步提示词（注入锚点）
+    console.log(`[ImageAgent] 图片尺寸: ${imageSize}，开始生成提示词...`);
+    const prompts = await generateImagePromptsTask({ state, anchor });
+    console.log(
+      `[ImageAgent] 共 ${prompts.length} 条提示词，开始逐步生成图片（含跨图一致性检验）...`,
+    );
+
+    // Step 3：串行生成，第一张图作为后续图片的 referenceImageUrl
     const images: string[] = [];
+    let referenceImageUrl: string | undefined = undefined;
+
     for (const [i, prompt] of prompts.entries()) {
       if (i > 0) await sleep(1500);
+      console.log(
+        `[ImageAgent] 正在生成第 ${i + 1}/${prompts.length} 张图片${referenceImageUrl ? "（将与第1张对比一致性）" : "（首图，作为后续参考）"}...`,
+      );
+
       const url = await imageEvaluatorOptimizer.invoke({
         prompt,
         opts: imageOpts,
         maxRetry: MAX_RETRY_PER_IMAGE,
+        referenceImageUrl, // 第一张时为 undefined，之后传入第一张 URL
       });
+
       images.push(url);
+      console.log(`[ImageAgent] 第 ${i + 1} 张图片完成: ${url}`);
+
+      // 第一张图片通过校验后，作为后续所有图片的参考
+      if (i === 0) {
+        referenceImageUrl = url;
+        console.log(`[ImageAgent] 第1张图片作为一致性参考基准已锁定`);
+      }
     }
 
     return {
