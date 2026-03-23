@@ -52,6 +52,7 @@ export function buildCharacterAnchorUserMessage(state: AgentState): string {
 
   const lines = [
     `主题：${state.topic}`,
+    up && `主体角色：${up.role}`,
     up && `画面风格：${up.style}`,
     up && `情绪氛围：${up.mood}`,
     up && `目标受众：${up.targetAudience}`,
@@ -125,11 +126,12 @@ export const IMAGE_SYSTEM_PROMPT = `你是一位专业的「分镜美术提示�
 
 ## 内容要求（必须遵守）
 1. **风格一致**：所有步骤的提示词必须使用与 style 参数一致的画风（如 "3D卡通" 就描述3D卡通风格）
-2. **情绪贴合**：画面氛围要反映 mood 参数（如 "温馨治愈" 则配色柔和、光线暖调）
-3. **受众适配**：内容要适合 targetAudience（如儿童受众禁止暴力/恐怖/成人内容）
-4. **与计划一致**：提示词必须紧扣该步的核心要点与场景描述，不添加无关元素
-5. **可生成性**：描述具体可视元素（角色、动作、场景、镜头、光照、色彩），避免抽象空话
-6. **只输出JSON**：不要 markdown 代码块，不要解释，只输出 JSON 数组
+2. **角色一致**：所有创作内容的主体角色必须与 role 参数一致（如 "小兔子" 就描述小兔子角色）
+3. **情绪贴合**：画面氛围要反映 mood 参数（如 "温馨治愈" 则配色柔和、光线暖调）
+4. **受众适配**：内容要适合 targetAudience（如儿童受众禁止暴力/恐怖/成人内容）
+5. **与计划一致**：提示词必须紧扣该步的核心要点与场景描述，不添加无关元素
+6. **可生成性**：描述具体可视元素（角色、动作、场景、镜头、光照、色彩），避免抽象空话
+7. **只输出JSON**：不要 markdown 代码块，不要解释，只输出 JSON 数组
 
 ## 输出格式（严格 JSON 数组）
 [
@@ -163,6 +165,7 @@ export function buildImageUserMessage(state: AgentState): string {
   const paramsContext = up
     ? `
 画面风格：${up.style}
+主体角色：${up.role}
 情绪氛围：${up.mood}
 目标受众：${up.targetAudience}
 图片尺寸：${up.imageSize}（提示词应适合此比例的画面构图）${up.extraRequirements ? `\n额外要求：${up.extraRequirements}` : ""}`

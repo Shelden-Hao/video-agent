@@ -1,4 +1,3 @@
-import "dotenv/config";
 import { ChatAlibabaTongyi } from "@langchain/community/chat_models/alibaba_tongyi";
 import {
   AIMessage,
@@ -81,6 +80,7 @@ function extractAndParsePlanJson(
  * 优先使用 state.userParams（由 parseInputAgent 设置），兜底用 state.topic。
  */
 export async function runPlanAgent(state: AgentState): Promise<AgentState> {
+  if (state.route && state.route.needs.plan === false) return state;
   const userParams = state.userParams;
 
   const userContent = userParams

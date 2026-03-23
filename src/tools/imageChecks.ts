@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { callMultimodalJson } from "./multimodalClient.js";
 
 export type ImageCheckResult = {
   ok: boolean;
@@ -10,14 +11,11 @@ export type ImageCheckResult = {
 type VisionJson = Record<string, unknown>;
 
 function getVisionConfig() {
-  const apiKey = process.env.ALIBABA_API_KEY;
-  const baseUrl =
-    process.env.DASHSCOPE_BASE_URL ?? "https://dashscope.aliyuncs.com";
   const model =
     process.env.BAILIAN_VISION_MODEL ??
     process.env.DASHSCOPE_VISION_MODEL ??
     "qwen-vl-max";
-  return { apiKey, baseUrl, model };
+  return { model };
 }
 
 /**
@@ -29,68 +27,12 @@ async function callVisionApi(
   contentItems: Array<Record<string, string>>,
   instruction: string,
 ): Promise<VisionJson | null> {
-  const { apiKey, baseUrl, model } = getVisionConfig();
-  if (!apiKey) return null;
-
-  const url = `${baseUrl}/api/v1/services/aigc/multimodal-generation/generation`;
-  const body = {
+  const { model } = getVisionConfig();
+  return callMultimodalJson({
     model,
-    input: {
-      messages: [
-        {
-          role: "user",
-          content: [...contentItems, { text: instruction }],
-        },
-      ],
-    },
-    parameters: {
-      enable_interleave: false,
-      max_output_tokens: 600,
-    },
-  };
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
+    content: [...(contentItems as any), { text: instruction }],
+    maxOutputTokens: 600,
   });
-
-  const text = await res.text();
-  let json: unknown;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    throw new Error(
-      `Vision API non-JSON response: HTTP ${res.status} ${text.slice(0, 200)}`,
-    );
-  }
-
-  if (!res.ok) {
-    const code = (json as any)?.code ?? "HTTPError";
-    const message = (json as any)?.message ?? text.slice(0, 200);
-    throw new Error(`Vision API error: ${code} - ${message}`);
-  }
-
-  const content = (json as any)?.output?.choices?.[0]?.message?.content;
-  if (!Array.isArray(content)) {
-    throw new Error("Vision API missing content array");
-  }
-  const textPart =
-    content.find((c: any) => typeof c?.text === "string")?.text ?? "";
-  let out = String(textPart ?? "").trim();
-  if (!out) return {};
-
-  const codeBlockMatch = out.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (codeBlockMatch) out = codeBlockMatch[1].trim();
-
-  try {
-    return JSON.parse(out) as VisionJson;
-  } catch {
-    return { _rawText: out };
-  }
 }
 
 /** 单图视觉调用（原 callVisionJsonTool） */

@@ -42,6 +42,9 @@ import {
   checkVideoQuality,
 } from "../tools/videoChecks.js";
 import { extractImageVisualStyle } from "../tools/imageChecks.js";
+import { randomUUID } from "node:crypto";
+import type { Artifact } from "../types/state.js";
+import { evaluatorOptimizer } from "../workflow/evaluatorOptimizer.js";
 
 // ---------------------------------------------------------------------------
 // 常量与工具函数
@@ -259,7 +262,9 @@ const extractImageStyleTask = task(
     console.log("[VideoAgent] 正在提取图片视觉风格（用于约束视频风格）...");
     const styleDesc = await extractImageVisualStyle(params.imageUrl);
     if (styleDesc) {
-      console.log(`[VideoAgent] 图片风格提取完成: ${styleDesc.slice(0, 100)}...`);
+      console.log(
+        `[VideoAgent] 图片风格提取完成: ${styleDesc.slice(0, 100)}...`,
+      );
     } else {
       console.warn("[VideoAgent] 图片风格提取失败，将依赖 userParams.style");
     }
@@ -290,7 +295,10 @@ const generateVideoParamsTask = task(
     const messages = [
       new SystemMessage(VIDEO_STRUCTURE_SYSTEM_PROMPT),
       new HumanMessage(
-        buildVideoStructureUserMessage(state, imageStyleDescription || undefined),
+        buildVideoStructureUserMessage(
+          state,
+          imageStyleDescription || undefined,
+        ),
       ),
     ];
 
@@ -393,7 +401,11 @@ const evaluateVideoTask = task(
     console.log("[VideoAgent] Step 3: 开始校验（语义/安全/质量）...");
 
     const [consistencyRes, safetyRes, qualityRes] = await Promise.all([
-      checkVideoConsistency(videoUrl, videoParams.prompt, userParams ?? undefined),
+      checkVideoConsistency(
+        videoUrl,
+        videoParams.prompt,
+        userParams ?? undefined,
+      ),
       checkVideoSafety(videoUrl, videoParams.prompt),
       checkVideoQuality(videoUrl),
     ]);
@@ -428,11 +440,7 @@ const evaluateVideoTask = task(
   },
 );
 
-// ---------------------------------------------------------------------------
-// Step 4：Evaluator-Optimizer 闭环（自动修改）
-// ---------------------------------------------------------------------------
-
-type VideoWorkflowInput = {
+async function runVideoEvaluatorOptimizer(params: {
   videoParams: VideoGenerationParams;
   maxRetry: number;
   t2vModel: string;
@@ -440,17 +448,8 @@ type VideoWorkflowInput = {
   baseUrl: string;
   audioUrl?: string;
   userParams?: AgentState["userParams"];
-};
-
-/**
- * 单步视频「生成 → 校验 → 反馈 → 重新生成」闭环。
- *
- * 遵循 LangGraph evaluator-optimizer 模式：
- *   generateVideo → evaluateVideo → [accepted? ✓end : ✗generateVideo]
- */
-const videoEvaluatorOptimizer = entrypoint(
-  "videoEvaluatorOptimizer",
-  async ({
+}): Promise<string> {
+  const {
     videoParams,
     maxRetry,
     t2vModel,
@@ -458,49 +457,35 @@ const videoEvaluatorOptimizer = entrypoint(
     baseUrl,
     audioUrl,
     userParams,
-  }: VideoWorkflowInput): Promise<string> => {
-    let lastFeedback = "";
+  } = params;
 
-    for (let attempt = 1; attempt <= maxRetry; attempt++) {
-      console.log(
-        `[VideoAgent] Step 4: 开始第 ${attempt}/${maxRetry} 次生成尝试（步骤 ${videoParams.step}）`,
-      );
-
-      const videoUrl = await generateVideoTask({
+  return await evaluatorOptimizer<string>({
+    maxRetry,
+    generate: async (feedback) => {
+      return await generateVideoTask({
         videoParams,
-        feedback: lastFeedback || undefined,
+        feedback: feedback || undefined,
         t2vModel,
         i2vModel,
         baseUrl,
         audioUrl,
       });
-
+    },
+    evaluate: async (videoUrl) => {
       const evaluation = await evaluateVideoTask({
         videoUrl,
         videoParams,
         userParams,
       });
-
-      if (evaluation.accepted) {
-        console.log(
-          `[VideoAgent] 步骤 ${videoParams.step} 视频通过校验 ✓ URL: ${videoUrl}`,
-        );
-        return videoUrl;
-      }
-
-      lastFeedback = evaluation.feedback;
-      console.warn(
-        `[VideoAgent] attempt ${attempt}/${maxRetry} 未通过 | ${lastFeedback}`,
-        evaluation.details,
+      return { accepted: evaluation.accepted, feedback: evaluation.feedback };
+    },
+    onAttempt: (attempt, max) => {
+      console.log(
+        `[VideoAgent] Step 4: 开始第 ${attempt}/${max} 次生成尝试（步骤 ${videoParams.step}）`,
       );
-    }
-
-    throw new Error(
-      `[VideoEval] 步骤 ${videoParams.step} 在 ${maxRetry} 次重试后仍未通过校验，` +
-        `最后失败原因: ${lastFeedback}`,
-    );
-  },
-);
+    },
+  });
+}
 
 // ---------------------------------------------------------------------------
 // 顶层 Video Agent 工作流
@@ -520,6 +505,7 @@ const videoEvaluatorOptimizer = entrypoint(
 const videoAgentWorkflow = entrypoint(
   "videoAgent",
   async (state: AgentState): Promise<AgentState> => {
+    if (state.route && state.route.needs.video === false) return state;
     if (!state.plan) {
       console.warn("[VideoAgent] 无 plan，跳过视频生成");
       return state;
@@ -528,7 +514,7 @@ const videoAgentWorkflow = entrypoint(
     const apiKey = process.env.ALIBABA_API_KEY;
     if (!apiKey) throw new Error("Missing ALIBABA_API_KEY");
 
-    const t2vModel = process.env.BAILIAN_VIDEO_MODEL ?? "wanx2.1-t2v-turbo";
+    const t2vModel = process.env.BAILIAN_T2V_MODEL ?? "wanx2.1-t2v-turbo";
     // i2v 模型：专用图生视频，未设置则回退到 t2v（不使用首帧）
     const i2vModel = process.env.BAILIAN_I2V_MODEL ?? undefined;
     const baseUrl =
@@ -545,11 +531,13 @@ const videoAgentWorkflow = entrypoint(
     const allParams = await generateVideoParamsTask(state);
 
     // 限制最大处理步骤数
-    const paramsToProcess = allParams.slice(0, MAX_VIDEO_STEPS);
+    const maxSteps =
+      state.workflowSpec?.constraints?.maxVideoSteps ?? MAX_VIDEO_STEPS;
+    const paramsToProcess = allParams.slice(0, maxSteps);
 
     console.log(
       `[VideoAgent] 共 ${allParams.length} 步，本次处理前 ${paramsToProcess.length} 步`,
-      `（VIDEO_MAX_STEPS=${MAX_VIDEO_STEPS}）`,
+      `（maxVideoSteps=${maxSteps}）`,
     );
 
     // Step 2 + 3 + 4：串行生成每步视频（避免并发触发限流）
@@ -560,7 +548,7 @@ const videoAgentWorkflow = entrypoint(
         await sleep(3_000);
       }
 
-      const videoUrl = await videoEvaluatorOptimizer.invoke({
+      const videoUrl = await runVideoEvaluatorOptimizer({
         videoParams: vp,
         maxRetry: MAX_RETRY_PER_VIDEO,
         t2vModel,
@@ -580,11 +568,30 @@ const videoAgentWorkflow = entrypoint(
       videos.forEach((v, i) => console.log(`  步骤 ${i + 1}: ${v}`));
     }
 
+    const artifacts: Artifact[] = videos.map((uri, i) => ({
+      id: randomUUID(),
+      kind: "video",
+      step: i + 1,
+      uri,
+      mimeType: "video/*",
+      metadata: {
+        params: paramsToProcess[i],
+        t2vModel,
+        i2vModel,
+      },
+      source: {
+        agent: "videoAgent",
+        model: i2vModel ? `${t2vModel}|${i2vModel}` : t2vModel,
+      },
+      createdAt: new Date().toISOString(),
+    }));
+
     return {
       ...state,
       videoParams: allParams,
       videos: videos.length > 0 ? videos : (state.videos ?? []),
       video: finalVideo,
+      artifacts: [...(state.artifacts ?? []), ...artifacts],
     };
   },
 );

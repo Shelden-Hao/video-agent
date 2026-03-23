@@ -79,6 +79,7 @@ export function buildVideoStructureUserMessage(
 画面风格：${up.style}
 情绪氛围：${up.mood}
 目标受众：${up.targetAudience}
+主体角色：${up.role}
 视频分辨率：${up.videoSize}（所有步骤的 size 必须使用此值）${up.extraRequirements ? `\n额外要求：${up.extraRequirements}` : ""}`
     : "";
 
@@ -210,7 +211,7 @@ export function buildVideoConsistencyInstruction(
   userParams?: UserParams,
 ): string {
   const styleNote = userParams
-    ? `\n视频应使用「${userParams.style}」风格，情绪氛围为「${userParams.mood}」，面向「${userParams.targetAudience}」。`
+    ? `\n视频应使用「${userParams.style}」风格，情绪氛围为「${userParams.mood}」，面向「${userParams.targetAudience}」，主体角色为「${userParams.role}」。`
     : "";
 
   return `你是一个视频内容审核系统，用于语义一致性检验。

@@ -45,14 +45,14 @@
 
 **技术栈：**
 
-| 层级 | 技术 |
-|------|------|
+| 层级       | 技术                                                                      |
+| ---------- | ------------------------------------------------------------------------- |
 | 工作流框架 | `@langchain/langgraph` — StateGraph + Functional API（task / entrypoint） |
-| LLM 调用 | `@langchain/community` — ChatAlibabaTongyi（阿里云百炼 qwen 系列） |
-| 图片生成 | 阿里云百炼 Z-Image（z-image-turbo） |
-| 视频生成 | 阿里云百炼 Wan（wan2.5-t2v-preview / wanx2.1-i2v-turbo） |
-| 视觉校验 | 阿里云百炼 Qwen-VL（qwen-vl-max） |
-| 运行时 | Node.js + TypeScript（ESM） |
+| LLM 调用   | `@langchain/community` — ChatAlibabaTongyi（阿里云百炼 qwen 系列）        |
+| 图片生成   | 阿里云百炼 Z-Image（z-image-turbo）                                       |
+| 视频生成   | 阿里云百炼 Wan（wan2.5-t2v-preview / wanx2.1-i2v-turbo）                  |
+| 视觉校验   | 阿里云百炼 Qwen-VL（qwen-vl-max）                                         |
+| 运行时     | Node.js + TypeScript（ESM）                                               |
 
 ---
 
@@ -113,34 +113,35 @@
 
 ```typescript
 type AgentState = {
-  topic: string;            // 用户原始输入（入口）
-  userParams: UserParams | null;  // Stage 1 解析结果
-  plan: VideoPlan | null;         // Stage 2 计划
-  script: string;           // 可选旁白（预留扩展）
-  images: string[];         // Stage 3 输出：图片 URL 数组
-  audio: string;            // 可选音频（预留扩展）
-  video: string;            // Stage 4 输出：第一条视频 URL（兼容字段）
-  videoParams?: VideoGenerationParams[];  // Stage 4 结构化参数
-  videos?: string[];        // Stage 4 输出：视频 URL 数组
-}
+  topic: string; // 用户原始输入（入口）
+  userParams: UserParams | null; // Stage 1 解析结果
+  plan: VideoPlan | null; // Stage 2 计划
+  script: string; // 可选旁白（预留扩展）
+  images: string[]; // Stage 3 输出：图片 URL 数组
+  audio: string; // 可选音频（预留扩展）
+  video: string; // Stage 4 输出：第一条视频 URL（兼容字段）
+  videoParams?: VideoGenerationParams[]; // Stage 4 结构化参数
+  videos?: string[]; // Stage 4 输出：视频 URL 数组
+};
 ```
 
 ### UserParams（Stage 1 解析结果）
 
 ```typescript
 type UserParams = {
-  rawPrompt: string;         // 用户原始输入
-  topic: string;             // 核心主题（简洁版）
-  style: string;             // 画面风格，如 "2D卡通"、"写实"
-  targetAudience: string;    // 目标受众，如 "3-6岁儿童"
-  mood: string;              // 情绪氛围，如 "欢快活泼"
-  videoDuration: number;     // 视频总时长（秒）
-  videoSize: string;         // 视频分辨率，如 "832*480"
-  imageSize: string;         // 图片尺寸，如 "1024*1024"
-  sceneCount: number;        // 场景数量（1-5）
-  useImageAsFirstFrame: boolean;  // 是否用图片作为视频首帧
+  rawPrompt: string; // 用户原始输入
+  topic: string; // 核心主题（简洁版）
+  role: string; // 主体角色（某个人物/动物/静物）
+  style: string; // 画面风格，如 "2D卡通"、"写实"
+  targetAudience: string; // 目标受众，如 "3-6岁儿童"
+  mood: string; // 情绪氛围，如 "欢快活泼"
+  videoDuration: number; // 视频总时长（秒）
+  videoSize: string; // 视频分辨率，如 "832*480"
+  imageSize: string; // 图片尺寸，如 "1024*1024"
+  sceneCount: number; // 场景数量（1-5）
+  useImageAsFirstFrame: boolean; // 是否用图片作为视频首帧
   extraRequirements: string; // 额外要求
-}
+};
 ```
 
 ### VideoPlan（Stage 2 计划）
@@ -151,15 +152,15 @@ type VideoPlan = {
   targetAge: string;
   totalDurationSeconds: number;
   summary: string;
-  steps: PlanStep[];         // 与 images[] / videos[] 索引一一对应
-}
+  steps: PlanStep[]; // 与 images[] / videos[] 索引一一对应
+};
 
 type PlanStep = {
   step: number;
-  teachingPoint: string;     // 本步要点（一句话）
-  sceneDescription: string;  // 画面描述（供图片/视频生成）
-  durationSeconds: number;   // 本步建议时长
-}
+  teachingPoint: string; // 本步要点（一句话）
+  sceneDescription: string; // 画面描述（供图片/视频生成）
+  durationSeconds: number; // 本步建议时长
+};
 ```
 
 ### VideoGenerationParams（Stage 4 结构化参数）
@@ -167,13 +168,13 @@ type PlanStep = {
 ```typescript
 type VideoGenerationParams = {
   step: number;
-  prompt: string;            // 优化后的视频生成提示词（含图片风格约束）
-  negativePrompt: string;    // 反向提示词
-  size: string;              // 分辨率（来自 userParams.videoSize）
-  duration: number;          // 视频时长（秒，5-10）
-  promptExtend: boolean;     // 是否启用 AI 提示词改写
-  firstFrameUrl?: string;    // 图片首帧 URL（i2v 模式时注入）
-}
+  prompt: string; // 优化后的视频生成提示词（含图片风格约束）
+  negativePrompt: string; // 反向提示词
+  size: string; // 分辨率（来自 userParams.videoSize）
+  duration: number; // 视频时长（秒，5-10）
+  promptExtend: boolean; // 是否启用 AI 提示词改写
+  firstFrameUrl?: string; // 图片首帧 URL（i2v 模式时注入）
+};
 ```
 
 ---
@@ -219,13 +220,13 @@ const result = await workflow.invoke(initialState);
 
 #### 解析推断规则示例
 
-| 用户输入关键词 | 推断结果 |
-|---|---|
+| 用户输入关键词           | 推断结果                                         |
+| ------------------------ | ------------------------------------------------ |
 | "儿童"、"宝宝"、"小朋友" | `targetAudience: "3-6岁儿童"`, `style: "3D卡通"` |
-| "竖屏"、"抖音"、"短视频" | `videoSize: "480*832"`, `imageSize: "720*1280"` |
-| "30秒" | `videoDuration: 30` |
-| "3个场景" | `sceneCount: 3` |
-| "不用首帧" | `useImageAsFirstFrame: false` |
+| "竖屏"、"抖音"、"短视频" | `videoSize: "480*832"`, `imageSize: "720*1280"`  |
+| "30秒"                   | `videoDuration: 30`                              |
+| "3个场景"                | `sceneCount: 3`                                  |
+| "不用首帧"               | `useImageAsFirstFrame: false`                    |
 
 #### 示例输出
 
@@ -330,8 +331,9 @@ Step 3.3  for each prompt（串行）:
 ```
 
 注入后的提示词示例：
+
 ```
-[STYLE: flat 2D cartoon, clean vector lines] [CHARACTER: orange tabby kitten with distinct tiger stripes, round big amber eyes] [COLORS: warm orange, white, green]; 
+[STYLE: flat 2D cartoon, clean vector lines] [CHARACTER: orange tabby kitten with distinct tiger stripes, round big amber eyes] [COLORS: warm orange, white, green];
 orange tabby kitten bouncing joyfully in a sunlit garden, surrounded by colorful flowers, 2D cartoon style, medium shot
 ```
 
@@ -391,10 +393,10 @@ Step 4.3  for each step（串行，最多 VIDEO_MAX_STEPS 步）:
 
 #### t2v vs i2v 模式对比
 
-| 模式 | 触发条件 | 优点 | 缺点 |
-|------|---------|------|------|
-| **t2v**（文生视频） | 默认 / 未配置 i2v 模型 | 无需额外开通，稳定 | 风格靠 prompt 约束，可能有偏差 |
-| **i2v**（图生视频） | 配置 `BAILIAN_I2V_MODEL` + `useImageAsFirstFrame=true` | 首帧严格与图片一致，风格可控 | 需单独开通 i2v 权限 |
+| 模式                | 触发条件                                               | 优点                         | 缺点                           |
+| ------------------- | ------------------------------------------------------ | ---------------------------- | ------------------------------ |
+| **t2v**（文生视频） | 默认 / 未配置 i2v 模型                                 | 无需额外开通，稳定           | 风格靠 prompt 约束，可能有偏差 |
+| **i2v**（图生视频） | 配置 `BAILIAN_I2V_MODEL` + `useImageAsFirstFrame=true` | 首帧严格与图片一致，风格可控 | 需单独开通 i2v 权限            |
 
 ---
 
@@ -404,22 +406,22 @@ Step 4.3  for each step（串行，最多 VIDEO_MAX_STEPS 步）:
 
 ### 图片校验（4项）
 
-| 校验项 | 通过阈值 | 失败时动作 |
-|--------|---------|----------|
-| **语义一致性** | `match=true && confidence ≥ 0.6` | 携带原因重新生成 |
-| **质量检测** | `acceptable=true && overallScore ≥ 0.6` | 携带原因重新生成 |
-| **安全审核** | nsfw/violence/politics/hate 全为 false | 携带原因重新生成 |
-| **跨图主角一致性** | `consistent=true && confidence ≥ 0.55` | 携带原因重新生成 |
+| 校验项             | 通过阈值                                | 失败时动作       |
+| ------------------ | --------------------------------------- | ---------------- |
+| **语义一致性**     | `match=true && confidence ≥ 0.6`        | 携带原因重新生成 |
+| **质量检测**       | `acceptable=true && overallScore ≥ 0.6` | 携带原因重新生成 |
+| **安全审核**       | nsfw/violence/politics/hate 全为 false  | 携带原因重新生成 |
+| **跨图主角一致性** | `consistent=true && confidence ≥ 0.55`  | 携带原因重新生成 |
 
 > 跨图一致性仅在第 2 张及之后的图片执行，第 1 张图通过校验后作为参考基准。
 
 ### 视频校验（3项）
 
-| 校验项 | 通过阈值 | 说明 |
-|--------|---------|------|
-| **语义一致性** | `match=true && confidence ≥ 0.6` | 含风格约束检验（传入 userParams） |
-| **安全审核** | 全为 false | 与图片安全标准一致 |
-| **质量检测** | `acceptable=true && overallScore ≥ 0.55` | 视频阈值比图片略宽松 |
+| 校验项         | 通过阈值                                 | 说明                              |
+| -------------- | ---------------------------------------- | --------------------------------- |
+| **语义一致性** | `match=true && confidence ≥ 0.6`         | 含风格约束检验（传入 userParams） |
+| **安全审核**   | 全为 false                               | 与图片安全标准一致                |
+| **质量检测**   | `acceptable=true && overallScore ≥ 0.55` | 视频阈值比图片略宽松              |
 
 ### 校验失败自动修复
 
@@ -461,6 +463,7 @@ Step 4.3  for each step（串行，最多 VIDEO_MAX_STEPS 步）:
 ```
 
 **实现方式：** 使用 LangGraph Functional API 的 `entrypoint` + `task` 组合：
+
 - `imageEvaluatorOptimizer` / `videoEvaluatorOptimizer`：`entrypoint`，管理重试循环
 - `generateImageTask` / `generateVideoTask`：`task`，执行实际 API 调用
 - `evaluateImageTask` / `evaluateVideoTask`：`task`，并行执行多项校验
@@ -473,30 +476,32 @@ Step 4.3  for each step（串行，最多 VIDEO_MAX_STEPS 步）:
 
 ### 必填项
 
-| 变量名 | 说明 | 示例值 |
-|--------|------|--------|
-| `ALIBABA_API_KEY` | 阿里云百炼 API Key | `sk-xxxxxxxx` |
-| `DASHSCOPE_BASE_URL` | DashScope 原生 API Base URL | `https://dashscope.aliyuncs.com` |
-| `BAILIAN_IMAGE_MODEL` | 图片生成模型 | `z-image-turbo` |
-| `BAILIAN_VIDEO_MODEL` | 视频生成模型（t2v） | `wan2.5-t2v-preview` |
-| `BAILIAN_VISION_MODEL` | 视觉校验模型 | `qwen-vl-max` |
+| 变量名                 | 说明                        | 示例值                           |
+| ---------------------- | --------------------------- | -------------------------------- |
+| `ALIBABA_API_KEY`      | 阿里云百炼 API Key          | `sk-xxxxxxxx`                    |
+| `DASHSCOPE_BASE_URL`   | DashScope 原生 API Base URL | `https://dashscope.aliyuncs.com` |
+| `BAILIAN_IMAGE_MODEL`  | 图片生成模型                | `z-image-turbo`                  |
+| `BAILIAN_T2V_MODEL`    | 视频生成模型（t2v）         | `wan2.5-t2v-preview`             |
+| `BAILIAN_VISION_MODEL` | 视觉校验模型                | `qwen-vl-max`                    |
 
 ### 可选项
 
-| 变量名 | 说明 | 默认值 |
-|--------|------|--------|
+| 变量名              | 说明                                   | 默认值 |
+| ------------------- | -------------------------------------- | ------ |
 | `BAILIAN_I2V_MODEL` | 图生视频模型（i2v），不配置则 t2v 模式 | 未设置 |
-| `VIDEO_MAX_RETRY` | 每步视频最大重试次数 | `3` |
-| `VIDEO_MAX_STEPS` | 最多生成视频步骤数（节约配额） | `1` |
-| `IMAGE_MAX_RETRY` | 每张图片最大重试次数 | `3` |
+| `VIDEO_MAX_RETRY`   | 每步视频最大重试次数                   | `3`    |
+| `VIDEO_MAX_STEPS`   | 最多生成视频步骤数（节约配额）         | `1`    |
+| `IMAGE_MAX_RETRY`   | 每张图片最大重试次数                   | `3`    |
 
 ### 模型选型参考
 
 **视频模型（t2v）：**
+
 - `wan2.5-t2v-preview` — 推荐，支持 5s/10s，480P/720P/1080P，支持自动配音
 - `wanx2.1-t2v-turbo` — 免费，但仅支持无声视频，固定5秒
 
 **视频模型（i2v，首帧图片）：**
+
 - `wanx2.1-i2v-turbo` — 图生视频，需在百炼控制台单独开通
 
 ---
@@ -598,6 +603,7 @@ video-agent/
 
 **原因：** dotenv 没有正确加载 `.env` 文件（常见于从 `src/` 子目录运行）。  
 **解决：** 项目已处理此问题，确保使用以下方式运行：
+
 ```bash
 npx tsx src/index.ts "..."  # ✅ 从项目根目录运行
 # 或
@@ -608,15 +614,18 @@ cd src && npx tsx index.ts "..."  # ✅ 从 src/ 目录运行也可
 
 **原因：** 未配置 `BAILIAN_I2V_MODEL` 时，系统使用 t2v 模式。  
 **解决方案1（推荐）：** 配置 i2v 模型：
+
 ```env
 BAILIAN_I2V_MODEL=wanx2.1-i2v-turbo
 ```
+
 **解决方案2：** 系统已内置图片风格提取机制，会将图片的 `artStyle`、`mainCharacter` 等约束注入视频 prompt，通常能确保风格基本一致。
 
 ### Q: 两张图片的主角长相不一样
 
 **原因（已修复）：** 图片独立生成时缺乏一致性约束。  
 **现有机制：**
+
 1. 生成图片前 LLM 会生成「角色锚点」（精确的主角外观描述），注入每条提示词
 2. 第2张及之后的图片会与第1张进行「跨图主角一致性」视觉对比
 3. 不一致时自动携带原因重新生成
@@ -629,11 +638,14 @@ BAILIAN_I2V_MODEL=wanx2.1-i2v-turbo
 ### Q: 如何生成多段视频（多个步骤）
 
 默认 `VIDEO_MAX_STEPS=1` 仅生成第 1 步以节约配额。修改方式：
+
 ```env
 # .env
 VIDEO_MAX_STEPS=3  # 生成前3步的视频
 ```
+
 或与 `sceneCount` 匹配，生成所有步骤：
+
 ```env
 VIDEO_MAX_STEPS=99  # 生成全部步骤
 ```
@@ -642,6 +654,7 @@ VIDEO_MAX_STEPS=99  # 生成全部步骤
 
 **系统限制：** 每步最多重试 `VIDEO_MAX_RETRY`（默认3）次，超出后抛出错误并终止流程。  
 **调整方式：**
+
 ```env
 VIDEO_MAX_RETRY=5   # 增加重试次数
 IMAGE_MAX_RETRY=5
@@ -649,4 +662,4 @@ IMAGE_MAX_RETRY=5
 
 ---
 
-*本文档对应代码版本：video-agent v1.0.0*
+_本文档对应代码版本：video-agent v1.0.0_

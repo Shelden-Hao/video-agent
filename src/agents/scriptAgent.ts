@@ -6,6 +6,8 @@ import {
 } from "../prompts/scriptPrompt.js";
 import { ChatAlibabaTongyi } from "@langchain/community/chat_models/alibaba_tongyi";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { randomUUID } from "node:crypto";
+import type { Artifact } from "../types/state.js";
 
 const model = new ChatAlibabaTongyi({
   alibabaApiKey: process.env.ALIBABA_API_KEY,
@@ -29,6 +31,8 @@ function cleanScriptOutput(raw: string): string {
  * 产出与分步计划一一对应的旁白文本，供后续 TTS 与视频合成使用。
  */
 export async function runScriptAgent(state: AgentState): Promise<AgentState> {
+  // legacy：若需要 text 则允许执行，否则跳过
+  if (state.route && state.route.needs.text === false) return state;
   if (!state.topic || !state.plan) return state;
 
   try {
@@ -41,9 +45,23 @@ export async function runScriptAgent(state: AgentState): Promise<AgentState> {
     const raw = res.content?.toString?.() ?? "";
     const script = cleanScriptOutput(raw);
 
+    const text = script || state.script;
+    const artifact: Artifact | null = text
+      ? {
+          id: randomUUID(),
+          kind: "text",
+          text,
+          mimeType: "text/plain",
+          metadata: { type: "script" },
+          source: { agent: "scriptAgent" },
+          createdAt: new Date().toISOString(),
+        }
+      : null;
+
     return {
       ...state,
-      script: script || state.script,
+      script: text,
+      artifacts: artifact ? [...(state.artifacts ?? []), artifact] : state.artifacts,
     };
   } catch (err) {
     console.error("[ScriptAgent] 模型调用失败:", err);

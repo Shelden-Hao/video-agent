@@ -19,6 +19,7 @@ export const PLANNER_SYSTEM_PROMPT = `你是一位专业的 AI 视频策划助�
 4. **叙事逻辑**：步骤之间要有顺序关联（如：引入 → 展开 → 高潮 → 收尾）
 5. **受众适配**：内容、语言风格要匹配 targetAudience（如儿童受众则画面健康温馨）
 6. **情绪一致**：整体氛围贯穿 mood 参数（如 "温馨治愈" 则每步都要体现温暖感）
+7. **角色一致**：所有步骤的场景描述必须使用与 role 参数一致的角色（如 "小兔子" 就描述小兔子角色）
 
 ## 输出格式（严格 JSON，不含任何 markdown 或说明）
 {
@@ -41,6 +42,7 @@ export function buildPlannerUserMessage(userParams: UserParams): string {
   const lines = [
     `主题：${userParams.topic}`,
     `画面风格：${userParams.style}`,
+    `主体角色：${userParams.role}`,
     `目标受众：${userParams.targetAudience}`,
     `情绪氛围：${userParams.mood}`,
     `视频总时长：${userParams.videoDuration}秒`,
@@ -51,7 +53,9 @@ export function buildPlannerUserMessage(userParams: UserParams): string {
     lines.push(`额外要求：${userParams.extraRequirements}`);
   }
 
-  lines.push(`\n请根据以上参数生成视频制作计划，只输出上述格式的 JSON，不要其他内容。`);
+  lines.push(
+    `\n请根据以上参数生成视频制作计划，只输出上述格式的 JSON，不要其他内容。`,
+  );
 
   return lines.join("\n");
 }

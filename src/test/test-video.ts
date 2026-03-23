@@ -55,7 +55,7 @@ async function main() {
   console.log(`📌 主题：${topic}`);
   console.log(`📑 计划：${plan.title}（${plan.steps.length} 步）`);
   console.log(
-    `⚙️  模型：${process.env.BAILIAN_VIDEO_MODEL ?? "wanx2.1-t2v-turbo"}`,
+    `⚙️  模型：${process.env.BAILIAN_T2V_MODEL ?? "wanx2.1-t2v-turbo"}`,
   );
   console.log(
     `🔢 最大处理步数：${process.env.VIDEO_MAX_STEPS ?? "1"}（设置 VIDEO_MAX_STEPS 可调整）`,
@@ -73,6 +73,8 @@ async function main() {
     video: "",
     videoParams: [],
     videos: [],
+    artifacts: [],
+    memory: [],
   };
 
   const startTime = Date.now();

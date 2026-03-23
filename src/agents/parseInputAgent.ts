@@ -5,7 +5,6 @@
  * 作为整个工作流的数据入口。后续所有 Agent 均通过 UserParams 获取配置。
  */
 import "dotenv/config";
-import { ChatAlibabaTongyi } from "@langchain/community/chat_models/alibaba_tongyi";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { AgentState, UserParams } from "../types/state.js";
 import {
@@ -14,18 +13,7 @@ import {
   getDefaultUserParams,
 } from "../prompts/parseInputPrompt.js";
 import { task, entrypoint } from "@langchain/langgraph";
-
-// 懒初始化：首次调用时创建，避免模块加载时 dotenv 尚未读取 .env 文件
-let _llm: ChatAlibabaTongyi | null = null;
-function getLLM(): ChatAlibabaTongyi {
-  if (!_llm) {
-    _llm = new ChatAlibabaTongyi({
-      alibabaApiKey: process.env.ALIBABA_API_KEY,
-      temperature: 0.2,
-    });
-  }
-  return _llm;
-}
+import { getLLM } from "../tools/common.js";
 
 /**
  * 从 LLM 输出中解析 UserParams。
@@ -46,6 +34,10 @@ function parseUserParamsJson(raw: string, rawPrompt: string): UserParams {
         typeof obj.topic === "string" && obj.topic.trim()
           ? obj.topic.trim()
           : defaults.topic,
+      role:
+        typeof obj.role === "string" && obj.role.trim()
+          ? obj.role.trim()
+          : defaults.role,
       style:
         typeof obj.style === "string" && obj.style.trim()
           ? obj.style.trim()
@@ -82,6 +74,14 @@ function parseUserParamsJson(raw: string, rawPrompt: string): UserParams {
         typeof obj.extraRequirements === "string"
           ? obj.extraRequirements
           : defaults.extraRequirements,
+      targetFormat:
+        typeof obj.targetFormat === "string" && obj.targetFormat.trim()
+          ? obj.targetFormat.trim()
+          : defaults.targetFormat,
+      targetType:
+        typeof obj.targetType === "string" && obj.targetType.trim()
+          ? obj.targetType.trim()
+          : defaults.targetType,
     };
   } catch {
     console.warn("[ParseInputAgent] JSON 解析失败，使用默认参数");
@@ -113,6 +113,7 @@ export const parseInputAgentWorkflow = entrypoint(
 
     const res = await getLLM().invoke(messages);
     const raw = res.content?.toString?.() ?? "";
+    // 结构化解析后得到 userParams，作为最初输入
     const userParams = parseUserParamsJson(raw, rawPrompt);
 
     console.log("[ParseInputAgent] 解析完成:");
@@ -126,6 +127,9 @@ export const parseInputAgentWorkflow = entrypoint(
   },
 );
 
+/**
+ * 从输入开始处理的第一个端点，解析提示词
+ */
 export async function runParseInputAgent(
   state: AgentState,
 ): Promise<AgentState> {

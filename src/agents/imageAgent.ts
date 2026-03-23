@@ -20,6 +20,9 @@ import {
   checkImageSafety,
   checkCrossImageConsistency,
 } from "../tools/imageChecks.js";
+import { randomUUID } from "node:crypto";
+import type { Artifact } from "../types/state.js";
+import { evaluatorOptimizer } from "../workflow/evaluatorOptimizer.js";
 
 // 懒初始化：首次调用时创建，避免模块加载时 dotenv 尚未读取 .env 文件
 let _llm: ChatAlibabaTongyi | null = null;
@@ -271,64 +274,34 @@ const evaluateImageTask = task(
   },
 );
 
-// ---------------------------------------------------------------------------
-// Evaluator-Optimizer 闭环（单张图片）
-// ---------------------------------------------------------------------------
-
-type ImageWorkflowInput = {
+async function runImageEvaluatorOptimizer(params: {
   prompt: string;
   opts: GenerateImageOpts;
   maxRetry: number;
-  /** 参考图片 URL（第一张），用于跨图一致性对比；第一张图为 undefined */
   referenceImageUrl?: string;
-};
-
-/**
- * 单张图片的「生成 → 评估 → 反馈 → 重试」闭环（Evaluator-Optimizer 模式）。
- *
- * 评估包含四项：结构验证、质量检测、安全审核、跨图主角一致性。
- * 不通过时将失败原因注入到下一次生成的 prompt 中自动修正。
- */
-const imageEvaluatorOptimizer = entrypoint(
-  "imageEvaluatorOptimizer",
-  async ({
-    prompt,
-    opts,
+}): Promise<string> {
+  const { prompt, opts, maxRetry, referenceImageUrl } = params;
+  return await evaluatorOptimizer<string>({
     maxRetry,
-    referenceImageUrl,
-  }: ImageWorkflowInput): Promise<string> => {
-    let lastFeedback = "";
-
-    for (let attempt = 1; attempt <= maxRetry; attempt++) {
-      // 将上次失败原因注入提示词帮助自动修正
-      const refinedPrompt = lastFeedback
-        ? `[修正要求：${lastFeedback}] ${prompt}`.slice(0, 1200)
+    generate: async (feedback) => {
+      const refinedPrompt = feedback
+        ? `[修正要求：${feedback}] ${prompt}`.slice(0, 1200)
         : prompt;
-
-      const url = await generateImageTask({ prompt: refinedPrompt, opts });
+      return await generateImageTask({ prompt: refinedPrompt, opts });
+    },
+    evaluate: async (url) => {
       const evaluation = await evaluateImageTask({
         url,
         prompt,
         referenceImageUrl,
       });
-
-      if (evaluation.accepted) {
-        console.log(`[ImageEval] attempt ${attempt} 通过 ✓ URL: ${url}`);
-        return url;
-      }
-
-      lastFeedback = evaluation.feedback;
-      console.warn(
-        `[ImageEval] attempt ${attempt}/${maxRetry} 未通过 | ${lastFeedback}`,
-        evaluation.details,
-      );
-    }
-
-    throw new Error(
-      `[ImageEval] 图片在 ${maxRetry} 次重试后仍未通过校验，最后失败原因: ${lastFeedback}`,
-    );
-  },
-);
+      return { accepted: evaluation.accepted, feedback: evaluation.feedback };
+    },
+    onAttempt: (attempt, max) => {
+      console.log(`[ImageEval] attempt ${attempt}/${max} generating...`);
+    },
+  });
+}
 
 // ---------------------------------------------------------------------------
 // 顶层 Image Agent 工作流
@@ -347,6 +320,7 @@ const imageEvaluatorOptimizer = entrypoint(
 const imageAgentWorkflow = entrypoint(
   "imageAgent",
   async (state: AgentState): Promise<AgentState> => {
+    if (state.route && state.route.needs.image === false) return state;
     if (!state.plan) return state;
 
     const apiKey = process.env.ALIBABA_API_KEY;
@@ -385,7 +359,7 @@ const imageAgentWorkflow = entrypoint(
         `[ImageAgent] 正在生成第 ${i + 1}/${prompts.length} 张图片${referenceImageUrl ? "（将与第1张对比一致性）" : "（首图，作为后续参考）"}...`,
       );
 
-      const url = await imageEvaluatorOptimizer.invoke({
+      const url = await runImageEvaluatorOptimizer({
         prompt,
         opts: imageOpts,
         maxRetry: MAX_RETRY_PER_IMAGE,
@@ -402,9 +376,24 @@ const imageAgentWorkflow = entrypoint(
       }
     }
 
+    const artifacts: Artifact[] = images.map((uri, i) => ({
+      id: randomUUID(),
+      kind: "image",
+      step: i + 1,
+      uri,
+      mimeType: "image/*",
+      metadata: {
+        prompt: prompts[i],
+        imageSize,
+      },
+      source: { agent: "imageAgent", model: imageModel },
+      createdAt: new Date().toISOString(),
+    }));
+
     return {
       ...state,
       images: images.length ? images : state.images,
+      artifacts: [...(state.artifacts ?? []), ...artifacts],
     };
   },
 );

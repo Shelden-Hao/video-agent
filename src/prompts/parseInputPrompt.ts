@@ -14,7 +14,10 @@ export const PARSE_INPUT_SYSTEM_PROMPT = `你是一个用户意图解析系统�
 | 字段 | 类型 | 说明 | 默认值 |
 |------|------|------|--------|
 | topic | string | 核心内容主题（简洁，20字以内） | 取自 prompt 关键信息 |
+| role | string | 主体角色（某个人物/动物/静物） | 取自 prompt 关键信息 |
 | style | string | 画面风格：如 "2D卡通"、"写实摄影"、"水彩动漫"、"赛博朋克"、"极简插画" | "2D卡通" |
+| targetFormat | string | 目标格式（text/video/voice/image） | "video" |
+| targetType | string | 目标类型（education/entertainment/other） | "education" |
 | targetAudience | string | 目标受众：如 "3-6岁儿童"、"青少年"、"成人通用" | "3-6岁儿童" |
 | mood | string | 情绪/氛围：如 "欢快活泼"、"温馨治愈"、"紧张刺激"、"浪漫唯美" | "温馨活泼" |
 | videoDuration | number | 总视频时长（秒，整数），如 5、10、15、30 | 10 |
@@ -32,14 +35,23 @@ export const PARSE_INPUT_SYSTEM_PROMPT = `你是一个用户意图解析系统�
 5. 若用户明确指定时长（如 "10秒"、"30秒"），按其设置 videoDuration
 6. 若用户提到多个场景/镜头/步骤/画面，sceneCount 对应设置（最多5）
 7. 若用户提到"不用首帧"、"纯文生视频"，useImageAsFirstFrame 设为 false
-8. extraRequirements 捕获无法用以上字段表达的特殊需求
+8. 若用户提到"生成文本"、"生成文字"、"生成文案"，targetFormat 设为 "text"
+9. 若用户提到"生成语音"、"生成配音"、"生成旁白"，targetFormat 设为 "voice"
+10. 若用户提到"生成图片"、"生成图像"、"生成视觉素材"，targetFormat 设为 "image"
+11. 若用户提到"教育"、"教学"、"培训"，targetType 设为 "education"
+12. 若用户提到"娱乐"、"游戏"、"动画"，targetType 设为 "entertainment"
+13. 若用户提到"其他"、"其他需求"、"其他要求"，targetType 设为 "other"
+14. extraRequirements 捕获无法用以上字段表达的特殊需求
 
 ## 输出格式（严格 JSON，不含任何 markdown 或说明）
 {
   "topic": "...",
+  "role": "...",
   "style": "...",
   "targetAudience": "...",
   "mood": "...",
+  "targetFormat": "...",
+  "targetType": "...",
   "videoDuration": 10,
   "videoSize": "832*480",
   "imageSize": "1024*1024",
@@ -60,7 +72,10 @@ export function getDefaultUserParams(rawPrompt: string): UserParams {
   return {
     rawPrompt,
     topic: rawPrompt.slice(0, 60).trim() || "未命名主题",
+    role: rawPrompt.slice(0, 60).trim() || "未命名角色",
     style: "2D卡通",
+    targetFormat: "video",
+    targetType: "education",
     targetAudience: "3-6岁儿童",
     mood: "温馨活泼",
     videoDuration: 10,

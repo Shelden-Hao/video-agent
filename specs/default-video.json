@@ -1,0 +1,9 @@
+{
+  "targets": ["image", "video"],
+  "constraints": {
+    "generateImagesForVideo": true,
+    "videoMode": "auto",
+    "maxVideoSteps": 1
+  }
+}
+

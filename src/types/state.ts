@@ -7,10 +7,16 @@ export type UserParams = {
   rawPrompt: string;
   /** 核心内容主题（简洁，供 Planner 使用） */
   topic: string;
+  /** 主体角色（某个人物/动物/静物） */
+  role: string;
   /** 画面风格，如 "3D卡通"、"写实"、"水彩动漫"、"赛博朋克" */
   style: string;
   /** 目标受众，如 "3-6岁儿童"、"青少年"、"成人通用" */
   targetAudience: string;
+  /** 目标格式，如 "video"、"text"、"voice"、"image" */
+  targetFormat: string;
+  /** 目标类型，如 "education"、"entertainment"、"other" */
+  targetType: string;
   /** 情绪/氛围，如 "欢快活泼"、"温馨治愈"、"紧张刺激" */
   mood: string;
   /** 总视频时长（秒） */
@@ -77,6 +83,87 @@ export type VideoGenerationParams = {
   firstFrameUrl?: string;
 };
 
+export type TargetKind = "text" | "image" | "video" | "audio";
+
+export type IntentSpec = {
+  /** 意图目标集合（粗粒度） */
+  targets: TargetKind[];
+  /** 主目标（可选） */
+  primaryTarget?: TargetKind;
+  /** 置信度 0~1（仅表达意图分类的确定程度） */
+  confidence: number;
+  /** 哪些关键槽位缺失（用于触发澄清提问） */
+  missingSlots: string[];
+  /** 对用户可见的决策摘要（避免暴露模型私密推理） */
+  publicRationale?: string;
+};
+
+export type MemoryItem = {
+  key: string;
+  value: string;
+  at: string;
+};
+
+export type Artifact = {
+  /** 全局唯一 id */
+  id: string;
+  /** 产物类型 */
+  kind: TargetKind;
+  /** 可选：对应 plan 的步骤号（从 1 开始） */
+  step?: number;
+  /** 资源地址（如 https://... 或本地相对路径） */
+  uri?: string;
+  /** 文本产物内容（如脚本/总结） */
+  text?: string;
+  /** 可选：MIME 类型（如 audio/mp3, image/png） */
+  mimeType?: string;
+  /** 任意扩展元信息：质量/安全/一致性/参数/trace 等 */
+  metadata?: Record<string, unknown>;
+  /** 产物来源（哪个 agent、模型等） */
+  source?: {
+    agent: string;
+    model?: string;
+  };
+  /** ISO 时间戳 */
+  createdAt: string;
+};
+
+export type WorkflowSpec = {
+  /** 期望生成的产物集合（配置驱动入口） */
+  targets: TargetKind[];
+  /** 可选：约束与策略（第一版先放这里，后续可拆分为更细的 spec） */
+  constraints?: {
+    /** 限制最多生成的视频步数（覆盖 env VIDEO_MAX_STEPS） */
+    maxVideoSteps?: number;
+    /** 是否为视频生成预先生成图片（用于 i2v 或风格约束） */
+    generateImagesForVideo?: boolean;
+    /** 强制视频模式：auto=t2v/i2v 按 userParams 与环境决定 */
+    videoMode?: "auto" | "t2v" | "i2v";
+    /** 语音合成参数（CosyVoice WebSocket API） */
+    tts?: {
+      model?: string;
+      voice?: string;
+      format?: "mp3" | "wav" | "pcm";
+      sampleRate?: number;
+      rate?: number;
+      pitch?: number;
+      volume?: number;
+      enableSsml?: boolean;
+    };
+  };
+};
+
+export type RoutePlan = {
+  targets: TargetKind[];
+  needs: {
+    plan: boolean;
+    text: boolean;
+    image: boolean;
+    video: boolean;
+    audio: boolean;
+  };
+};
+
 /** 主 Agent 状态 —— 工作流全程通过此 JSON 对象传递数据 */
 export type AgentState = {
   /** 用户原始输入（入口字段） */
@@ -85,7 +172,7 @@ export type AgentState = {
   userParams: UserParams | null;
   /** Planner 生成的结构化计划 */
   plan: VideoPlan | null;
-  /** 旁白脚本（可选，供扩展使用） */
+  /** 文本输出（可选：文案/脚本/总结等；第一版先复用为 audio 的输入） */
   script: string;
   /** 每步生成的图片 URL（与 plan.steps 索引对应） */
   images: string[];
@@ -97,4 +184,15 @@ export type AgentState = {
   videoParams?: VideoGenerationParams[];
   /** 每步生成的视频 URL（与 videoParams 索引对应） */
   videos?: string[];
+
+  /** 完全的 --spec 参数配置驱动的工作流声明（可选，入口可从 CLI 注入） */
+  workflowSpec?: WorkflowSpec;
+  /** Router 的路由决策结果（可选，便于观测与调试） */
+  route?: RoutePlan;
+  /** 意图分析的粗粒度结构化输出（可中断等待用户澄清） */
+  intent?: IntentSpec;
+  /** 短期 memory：跨多轮/多次恢复保留的关键信息（澄清答案、反馈等） */
+  memory: MemoryItem[];
+  /** 通用产物集合（迁移期：与 images/videos/audio/script 等并存） */
+  artifacts: Artifact[];
 };

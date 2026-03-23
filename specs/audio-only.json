@@ -1,0 +1,16 @@
+{
+  "targets": ["audio"],
+  "constraints": {
+    "tts": {
+      "model": "cosyvoice-v3-flash",
+      "voice": "longanyang",
+      "format": "mp3",
+      "sampleRate": 22050,
+      "volume": 50,
+      "rate": 1,
+      "pitch": 1,
+      "enableSsml": false
+    }
+  }
+}
+

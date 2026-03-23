@@ -53,6 +53,10 @@ async function main() {
     images: [],
     audio: "",
     video: "",
+    videoParams: [],
+    videos: [],
+    artifacts: [],
+    memory: [],
   };
 
   const state = await runScriptAgent(initialState);

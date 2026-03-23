@@ -5,6 +5,7 @@ import {
   buildVideoSafetyInstruction,
   VIDEO_QUALITY_INSTRUCTION,
 } from "../prompts/videoPrompt.js";
+import { callMultimodalJson } from "./multimodalClient.js";
 
 export type VideoCheckResult = {
   ok: boolean;
@@ -16,15 +17,12 @@ export type VideoCheckResult = {
 type VisionJson = Record<string, unknown>;
 
 function getVisionConfig() {
-  const apiKey = process.env.ALIBABA_API_KEY;
-  const baseUrl =
-    process.env.DASHSCOPE_BASE_URL ?? "https://dashscope.aliyuncs.com";
   // qwen-vl-max 支持视频 URL 输入
   const model =
     process.env.BAILIAN_VISION_MODEL ??
     process.env.DASHSCOPE_VISION_MODEL ??
     "qwen-vl-max";
-  return { apiKey, baseUrl, model };
+  return { model };
 }
 
 /**
@@ -39,73 +37,12 @@ async function callVisionWithVideo(
   videoUrl: string,
   instruction: string,
 ): Promise<VisionJson | null> {
-  const { apiKey, baseUrl, model } = getVisionConfig();
-  if (!apiKey) return null;
-
-  const url = `${baseUrl}/api/v1/services/aigc/multimodal-generation/generation`;
-  const body = {
+  const { model } = getVisionConfig();
+  return callMultimodalJson({
     model,
-    input: {
-      messages: [
-        {
-          role: "user",
-          content: [
-            { video: videoUrl },
-            { text: instruction },
-          ],
-        },
-      ],
-    },
-    parameters: {
-      enable_interleave: false,
-      max_output_tokens: 512,
-    },
-  };
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
+    content: [{ video: videoUrl }, { text: instruction }],
+    maxOutputTokens: 512,
   });
-
-  const text = await res.text();
-  let json: any;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    throw new Error(
-      `Vision API non-JSON response: HTTP ${res.status} ${text.slice(0, 200)}`,
-    );
-  }
-
-  if (!res.ok) {
-    const code = json?.code ?? "HTTPError";
-    const message = json?.message ?? text.slice(0, 200);
-    throw new Error(`Vision API error: ${code} - ${message}`);
-  }
-
-  const content = json?.output?.choices?.[0]?.message?.content;
-  if (!Array.isArray(content)) {
-    throw new Error("Vision API missing content array");
-  }
-  const textPart =
-    content.find((c: any) => typeof c?.text === "string")?.text ?? "";
-  let out = String(textPart ?? "").trim();
-  if (!out) return {};
-
-  const codeBlockMatch = out.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (codeBlockMatch) {
-    out = codeBlockMatch[1].trim();
-  }
-
-  try {
-    return JSON.parse(out) as VisionJson;
-  } catch {
-    return { _rawText: out };
-  }
 }
 
 /**
